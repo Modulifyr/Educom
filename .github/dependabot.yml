@@ -1,0 +1,85 @@
+# .github/dependabot.yml
+# ───────────────────────────────────────────────────────────────────────────
+# Weekly automated dependency update PRs.
+# Creates PRs every Monday at 06:00 NPT for outdated packages.
+# Groups related packages into single PRs to reduce noise.
+#
+# Customise the groups section for your project's dependencies.
+# Remove the Rust section if you are not using Tauri.
+# ───────────────────────────────────────────────────────────────────────────
+
+version: 2
+
+updates:
+  # ── npm packages ──────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Kathmandu
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      # ── Core framework ────────────────────────────────────────────
+      # Add your framework packages below, uncomment the relevant ones:
+      framework:
+        patterns:
+          # Next.js
+          - 'next'
+          - 'react'
+          - 'react-dom'
+          - '@types/react'
+          - '@types/react-dom'
+          # NestJS (uncomment if using)
+          # - '@nestjs/*'
+          # - 'nestjs'
+          # Expo / React Native (uncomment if using)
+          # - 'expo'
+          # - 'expo-*'
+          # - 'react-native'
+          # - '@react-navigation/*'
+      # ── Dev tooling (always group these) ────────────────────────
+      dev-tooling:
+        patterns:
+          - 'eslint*'
+          - 'typescript'
+          - 'tailwindcss'
+          - '@tailwindcss/*'
+          - 'prettier*'
+          - 'vitest'
+          - '@vitest/*'
+          - 'husky'
+          - 'lint-staged'
+          - '@types/node'
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Asia/Kathmandu
+    labels:
+      - dependencies
+    commit-message:
+      prefix: 'chore(ci)'
+
+  # ── Rust / Cargo (Tauri desktop projects only) ───────────────────────
+  # Uncomment this entire block for Tauri projects:
+  # - package-ecosystem: cargo
+  #   directory: '/src-tauri'
+  #   schedule:
+  #     interval: weekly
+  #     day: monday
+  #     time: '06:00'
+  #     timezone: Asia/Kathmandu
+  #   labels:
+  #     - dependencies
+  #   commit-message:
+  #     prefix: 'chore(deps)'

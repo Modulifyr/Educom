@@ -1,0 +1,87 @@
+# .github/workflows/release.yml
+# ───────────────────────────────────────────────────────────────────────────
+# Automated release workflow.
+# Triggers when a version tag is pushed.
+#
+# What it does:
+#   1. Runs full CI pipeline (lint, audit, test, build)
+#   2. Creates a GitHub Release with auto-generated release notes
+#   3. Attaches build artifacts if configured
+#
+# To trigger:
+#   git tag -a v1.0.0 -m "Release 1.0.0"
+#   git push origin v1.0.0
+#
+# Pre-release tags (auto-detected):
+#   v1.0.0-beta.1  → marked as pre-release
+#   v1.0.0-rc.1    → marked as pre-release
+# ───────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      - name: Run tests
+        run: npm test -- --run
+        env:
+          NODE_ENV: test
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+          # Add your project-specific build env vars here
+
+      # ── For web/API: no artifact needed (Vercel deploys from the tag) ──────
+      # ── For desktop (Tauri/Electron): uncomment and configure below ────────
+      # - name: Upload build artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: build-${{ github.ref_name }}
+      #     path: dist/
+      #     retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          # files: |        # Uncomment to attach build artifacts
+          #   dist/**

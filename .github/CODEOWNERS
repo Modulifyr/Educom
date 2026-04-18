@@ -1,0 +1,23 @@
+# CODEOWNERS
+# Defines who reviews changes to which parts of the codebase.
+# GitHub automatically requests review from the right owner on every PR.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ── Default: Rijan reviews everything unless overridden below ─────────────────
+*                             @modulifyr-lab
+
+# ── GitHub Actions and config ─────────────────────────────────────────────────
+.github/                      @modulifyr-lab
+*.config.*                    @modulifyr-lab
+tsconfig*.json                @modulifyr-lab
+package.json                  @modulifyr-lab
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+docs/                         @modulifyr-lab
+*.md                          @modulifyr-lab
+
+# ── When you add engineers, assign them per module ────────────────────────────
+# Example:
+# src/app/billing/            @engineer-username
+# src/app/auth/               @engineer-username
+# src/components/             @designer-username

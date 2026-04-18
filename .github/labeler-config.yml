@@ -1,0 +1,99 @@
+# .github/labeler-config.yml
+# ───────────────────────────────────────────────────────────────────────────
+# Label rules consumed by .github/workflows/labeler.yml
+# Each label maps to a list of file glob patterns.
+# When a PR changes any file matching a pattern, that label is applied.
+#
+# Customise the glob paths for your project structure.
+# Remove sections that don't apply to your project type.
+# ───────────────────────────────────────────────────────────────────────────
+
+'area: frontend':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/app/**'
+      - 'src/components/**'
+      - 'src/pages/**'
+      - '**/*.css'
+      - '**/*.tsx'
+      - 'public/**'
+
+'area: backend':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/api/**'
+      - 'src/server/**'
+      - 'src/lib/**'
+      - 'src/services/**'
+
+'area: database':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'prisma/**'
+      - '**/*migration*'
+      - '**/*schema.prisma'
+
+'area: mobile':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'app/**'        # Expo Router
+      - 'screens/**'
+      - 'navigation/**'
+      - 'assets/**'
+
+'area: desktop':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src-tauri/**'  # Tauri
+      - 'electron/**'   # Electron
+
+'area: infrastructure':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'terraform/**'
+      - 'docker/**'
+      - 'Dockerfile*'
+      - 'docker-compose*'
+      - '.env.example'
+
+'area: ci-cd':
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/**'
+
+'area: tests':
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.test.ts'
+      - '**/*.test.tsx'
+      - '**/*.spec.ts'
+      - '**/*.spec.tsx'
+      - '__tests__/**'
+      - 'e2e/**'
+      - 'cypress/**'
+
+'area: docs':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'docs/**'
+      - '*.md'
+      - '.github/*.md'
+
+'dependencies':
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Cargo.toml'     # Tauri/Rust
+      - 'Cargo.lock'
+
+'area: config':
+  - changed-files:
+    - any-glob-to-any-file:
+      - '*.config.*'
+      - 'tsconfig*.json'
+      - '.eslintrc*'
+      - 'eslint.config.*'
+      - '.prettierrc*'
+      - 'app.json'       # Expo
+      - 'tauri.conf.json'

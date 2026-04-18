@@ -1,0 +1,72 @@
+# .github/workflows/ci.yml
+# ───────────────────────────────────────────────────────────────────────────
+# Universal CI pipeline for all Modulifyr projects.
+# Runs on every push and PR to main and develop.
+# Pipeline: install → lint → audit → test → build
+#
+# ── Customise for your project type ───────────────────────────────────
+# Web (Next.js):    Use as-is. Add NEXT_PUBLIC_ vars in env.build.
+# Backend (NestJS): Replace build step command as needed.
+# Mobile (Expo):    Add `eas build --platform all --non-interactive` step.
+#                   Requires EAS_TOKEN secret in GitHub repo settings.
+# Desktop (Tauri):  Add Rust toolchain setup + `npm run tauri build` step.
+#                   See: https://tauri.app/distribute/github-action/
+# Static (Astro):   Use as-is. Adjust build output directory.
+# ───────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint · Audit · Test · Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+        # Fails if any high or critical vulnerabilities found.
+        # Run `npm audit fix` locally to resolve.
+        continue-on-error: false
+
+      - name: Run tests
+        run: npm test -- --run
+        env:
+          NODE_ENV: test
+          # ── Add project-specific test env vars below ────────────────────────────
+          # Use empty strings for safe fallbacks in CI:
+          # DATABASE_URL: ""
+          # UPSTASH_REDIS_REST_URL: ""
+          # NOTION_API_KEY: ""
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+          # ── Add project-specific build env vars below ───────────────────────────
+          # NEXT_PUBLIC_SITE_URL: https://your-domain.vercel.app
