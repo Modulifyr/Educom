@@ -1,19 +1,28 @@
-# Architecture — [Project Name]
+# Architecture — Educom Institutional Management System
 
-**Version:** [e.g. 1.0]  
-**Last updated:** [YYYY-MM-DD]  
-**Author:** [Name]  
-**Project type:** [Web App / Mobile / Desktop / API / Static Site]
+**Version:** 1.0.0
+**Last updated:** 2026-04-18
+**Author:** Educom Engineering Team
+**Project type:** Desktop Application (Tauri + React + TypeScript)
 
 ---
 
 ## 1. System Overview
 
-<!-- 2–4 sentences. What does this system do? Who uses it? What does it replace? -->
+Educom is a modular desktop application for educational institutional management, providing comprehensive functionality for student records, staff management, attendance tracking, payroll processing, fee collection, inventory management, course administration, examination grading, and financial ledgering.
 
-**Users:** [Who interacts with this system and how?]  
-**Scale:** [Approximate number of users, records, or requests per day]  
-**Criticality:** [High / Medium / Low — what happens if it goes down?]
+**Users:**
+- Administrators (full system access)
+- Management staff (global visibility across all modules)
+- Finance department (accounting and payroll modules only)
+- Teachers (academic and attendance functions only)
+
+**Scale:**
+- Supports thousands of student and staff records
+- Multi-year academic history storage
+- Offline-first with background synchronization
+
+**Criticality:** High — Core institutional operations depend on this system
 
 ---
 
@@ -21,144 +30,299 @@
 
 This project follows Modulifyr's four-layer modular architecture.
 
-\`\`\`
-┌──────────────────────────────────────────┐
-│           Presentation Layer              │
-│  (UI components, pages, routes)           │
-├──────────────────────────────────────────┤
-│           Application Layer               │
-│  (use cases, validation, orchestration)   │
-├──────────────────────────────────────────┤
-│             Domain Layer                  │
-│  (business entities, rules, interfaces)   │
-├──────────────────────────────────────────┤
-│          Infrastructure Layer             │
-│  (DB, APIs, file storage, email, queues)  │
-└──────────────────────────────────────────┘
-\`\`\`
+```
+┌──────────────────────────────────────────────────────┐
+│              Presentation Layer                       │
+│  (React components, pages, Sidebar, UtilityDock)    │
+├──────────────────────────────────────────────────────┤
+│              Application Layer                        │
+│  (Zustand store, RBAC service, use cases)           │
+├──────────────────────────────────────────────────────┤
+│                Domain Layer                           │
+│  (TypeScript interfaces, business entities)          │
+├──────────────────────────────────────────────────────┤
+│             Infrastructure Layer                       │
+│  (Database service, Import/Export, Tauri commands)   │
+└──────────────────────────────────────────────────────┘
+```
 
 ### Presentation Layer
-<!-- What lives here? Server components, client components, pages, API routes. -->
+
+| Component | Responsibility |
+|---|---|
+| `LoginScreen` | User authentication with demo account selection |
+| `Sidebar` | Module navigation with role-based visibility |
+| `UtilityDock` | Drag-drop import and export functionality |
+| `Dashboard` | Overview statistics and quick actions |
+| `*Module` | Feature-specific CRUD interfaces |
 
 ### Application Layer
-<!-- What lives here? Use-case handlers, form validation, orchestration logic. -->
+
+| Service | Responsibility |
+|---|---|
+| `appStore` | Global state management via Zustand |
+| `rbacService` | Permission checking, module access control |
+| `importExportService` | Spreadsheet parsing, file generation |
 
 ### Domain Layer
-<!-- What lives here? Core entities, business rules, value objects. -->
+
+| Entity | Purpose |
+|---|---|
+| `User` | System users with role assignment |
+| `Student` | Student demographic and enrollment data |
+| `Staff` | Employee records with salary information |
+| `AttendanceRecord` | Daily attendance entries |
+| `SalaryRecord` | Processed salary with payment status |
+| `FeeRecord` | Student fees with payment tracking |
+| `InventoryItem` | Stock items with reorder levels |
+| `Course` | Course definitions and assignments |
+| `ExamRecord` | Student examination results |
+| `LedgerEntry` | Financial transaction records |
 
 ### Infrastructure Layer
-<!-- What lives here? Database adapters, external API clients, queues, email. -->
 
----
-
-## 3. Tech Stack
-
-| Layer | Technology | Why |
-|---|---|---|
-| Framework | | |
-| Language | TypeScript | Company standard |
-| Styling | | |
-| Database | | |
-| ORM | | |
-| Auth | | |
-| Email | | |
-| Queue | | |
-| Cache | | |
-| Deployment | | |
-| Monitoring | | |
-
----
-
-## 4. Data Flow
-
-<!-- Describe the main data flows. -->
-
-### [Flow 1: e.g. User submits a form]
-
-\`\`\`
-Browser → API route → Validation → Use case → Repository → Database
-                                                     ↓
-                                             Email notification
-\`\`\`
-
-### [Flow 2: e.g. Background job]
-
-\`\`\`
-Scheduled trigger → Queue → Worker → External API → Database update
-\`\`\`
-
----
-
-## 5. External Dependencies
-
-| Service | Purpose | What happens if it's down? |
-|---|---|---|
-| [e.g. PostgreSQL] | Primary database | System unavailable |
-| [e.g. Resend] | Transactional email | Emails queued/dropped |
-| [e.g. Upstash Redis] | Rate limiting | Falls back to in-memory |
-| [e.g. Vercel] | Hosting | System unavailable |
-
----
-
-## 6. Environment Architecture
-
-\`\`\`
-[Development] → [Staging] → [Production]
-  localhost        Vercel        Vercel
-  local DB         test DB       prod DB
-\`\`\`
-
----
-
-## 7. Authentication & Authorization
-
-- **Auth method:** [e.g. JWT / session-based / API key]
-- **Token lifetime:** [e.g. 15 min access, 7 day refresh]
-- **Authorization model:** [e.g. RBAC with roles: Admin, User, Viewer]
-- **Session storage:** [e.g. HttpOnly cookie]
-
----
-
-## 8. Database Schema Overview
-
-<!-- High-level tables and relationships. Link to Prisma schema for full detail. -->
-
-Key tables:
-- `users` — [what it stores]
-- `[table]` — [what it stores]
-
-Relationships:
-- A user has many [X]
-- [X] belongs to one [Y]
-
----
-
-## 9. Performance Targets
-
-| Metric | Target | Measurement |
-|---|---|---|
-| LCP (web) | < 2.5s | Lighthouse |
-| API response (p95) | < 300ms | APM |
-| DB query (p95) | < 100ms | Query profiling |
-| Uptime | 99.9% | 30-day rolling |
-| Error rate | < 0.1% | Error tracking |
-
----
-
-## 10. Known Limitations & Technical Debt
-
-| Limitation | Impact | Planned resolution |
-|---|---|---|
-| | | |
-
----
-
-## 11. Architecture Decision Records
-
-| ADR | Decision |
+| Adapter | Technology |
 |---|---|
-| [ADR-0001](adr/ADR-0001-[name].md) | [What was decided] |
+| `database.ts` | Local storage with localStorage API |
+| `lib.rs` | Rust SQLite via rusqlite |
+| `xlsx` | SheetJS for spreadsheet operations |
 
 ---
 
-*Last reviewed by: [Name] on [Date]*
+## 3. Module Architecture
+
+### Module Communication
+
+All modules communicate via standardized TypeScript interfaces defined in `src/types/index.ts`. No module imports directly from another module's internal implementation.
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Students   │────▶│  Database   │◀────│   Staff     │
+│   Module    │     │   Service   │     │   Module    │
+└─────────────┘     └─────────────┘     └─────────────┘
+       │                   ▲
+       │                   │
+       ▼                   │
+┌─────────────┐     ┌─────────────┐
+│  Attendance │────▶│   RBAC     │
+│   Module    │     │   Service   │
+└─────────────┘     └─────────────┘
+```
+
+### Module List
+
+| Module | Access | Permissions |
+|---|---|---|
+| Dashboard | All roles | View |
+| Students | All roles | View; Admin/Management: Create/Edit/Delete |
+| Staff | All roles | View; Admin/Management: Create/Edit/Delete |
+| Attendance | All roles | View; Teacher: Create/Edit |
+| Salary | Management, Finance | View; Management: Process/Edit |
+| Fees | Management, Finance | View; Finance: Create/Edit/Record Payment |
+| Inventory | Management | View; Management: Create/Edit/Delete |
+| Courses | Management | View; Management: Create/Edit/Delete |
+| Exams | Management, Teacher | View; Teacher: Grade |
+| Ledger | Management, Finance | View; Finance: Create/Edit |
+| Reports | All roles | View; Export |
+| Users | Admin | View; Admin: Create/Edit/Delete |
+| Settings | All roles | View |
+
+---
+
+## 4. Data Architecture
+
+### Local Storage Strategy
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Browser localStorage                   │
+├─────────────────────────────────────────────────────────┤
+│  educom_db_users        │ User records                  │
+│  educom_db_students     │ Student records               │
+│  educom_db_staff       │ Staff records                 │
+│  educom_db_attendance   │ Attendance records            │
+│  educom_db_salary       │ Salary records                │
+│  educom_db_fees         │ Fee records                   │
+│  educom_db_inventory    │ Inventory items               │
+│  educom_db_courses      │ Course records                │
+│  educom_db_exams        │ Exam records                  │
+│  educom_db_ledger       │ Ledger entries                │
+│  educom_db_sync_pending │ Pending sync operations       │
+│  educom_db_last_sync    │ Last sync timestamp           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### SQLite Schema (Rust Backend)
+
+```sql
+-- Core tables
+users, students, staff, attendance, salary, fees,
+inventory, courses, exams, ledger, sync_queue
+
+-- All tables use TEXT for IDs (UUID)
+-- All timestamps use ISO 8601 format (TEXT)
+-- Foreign keys validated at application layer
+```
+
+### Synchronization Flow
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   User       │────▶│   Sync       │────▶│   Server     │
+│   Action     │     │   Queue      │     │   (Future)   │
+└──────────────┘     └──────────────┘     └──────────────┘
+                           │
+                           ▼
+                    ┌──────────────┐
+                    │   Background  │
+                    │   Process     │
+                    └──────────────┘
+```
+
+---
+
+## 5. Security Architecture
+
+### Role-Based Access Control
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      User Login                          │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                   RBAC Service                           │
+│  ┌─────────────┬─────────────┬─────────────┬───────────┐ │
+│  │    Admin    │ Management  │   Finance   │  Teacher  │ │
+│  │   (All)     │   (All)     │ (Accounting)│ (Academic)│ │
+│  └─────────────┴─────────────┴─────────────┴───────────┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Permission Matrix
+
+| Permission | Admin | Management | Finance | Teacher |
+|---|---|---|---|---|
+| students:* | ✓ | ✓ | View | View |
+| staff:* | ✓ | ✓ | View | View |
+| attendance:* | ✓ | ✓ | View | ✓ |
+| salary:* | ✓ | ✓ | ✓ | - |
+| fees:* | ✓ | ✓ | ✓ | - |
+| inventory:* | ✓ | ✓ | - | - |
+| courses:* | ✓ | ✓ | - | View |
+| exams:* | ✓ | ✓ | - | ✓ |
+| ledger:* | ✓ | ✓ | ✓ | - |
+| reports:* | ✓ | ✓ | ✓ | ✓ |
+| users:* | ✓ | - | - | - |
+| settings:* | ✓ | ✓ | View | View |
+
+---
+
+## 6. Performance Considerations
+
+### Bundle Optimization
+
+| Asset | Size | Strategy |
+|---|---|---|
+| JavaScript | ~251KB gzipped | Code splitting for import/export |
+| CSS | ~19KB gzipped | Tailwind purge |
+| Fonts | System fonts | No custom font loading |
+
+### Data Handling
+
+- **Pagination** — Not implemented; relies on browser virtualization
+- **Lazy Loading** — Dynamic import for xlsx library
+- **Memoization** — useCallback for expensive computations
+
+---
+
+## 7. Technology Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Desktop Framework | Tauri | 2.0 |
+| Frontend | React | 18.3 |
+| Language | TypeScript | 5.5 |
+| Styling | Tailwind CSS | 3.4 |
+| State | Zustand | 4.5 |
+| Spreadsheet | xlsx (SheetJS) | 0.18 |
+| Database (Frontend) | localStorage | - |
+| Database (Backend) | SQLite (rusqlite) | 0.31 |
+| Date Handling | date-fns | 3.6 |
+
+---
+
+## 8. File Structure
+
+```
+f:\Company\Projects\Educom\
+├── src/
+│   ├── components/
+│   │   ├── auth/
+│   │   │   └── LoginScreen.tsx
+│   │   ├── layout/
+│   │   │   ├── Sidebar.tsx
+│   │   │   └── UtilityDock.tsx
+│   │   └── modules/
+│   │       ├── Dashboard.tsx
+│   │       ├── StudentsModule.tsx
+│   │       ├── StaffModule.tsx
+│   │       ├── AttendanceModule.tsx
+│   │       ├── SalaryModule.tsx
+│   │       ├── FeesModule.tsx
+│   │       ├── InventoryModule.tsx
+│   │       ├── CoursesModule.tsx
+│   │       ├── ExamsModule.tsx
+│   │       ├── LedgerModule.tsx
+│   │       ├── ReportsModule.tsx
+│   │       ├── UsersModule.tsx
+│   │       └── SettingsModule.tsx
+│   ├── services/
+│   │   ├── database.ts
+│   │   ├── rbac.ts
+│   │   └── importExport.ts
+│   ├── store/
+│   │   └── appStore.ts
+│   ├── types/
+│   │   └── index.ts
+│   ├── App.tsx
+│   ├── main.tsx
+│   └── index.css
+├── src-tauri/
+│   ├── src/
+│   │   └── lib.rs
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── adr/
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+├── tailwind.config.js
+└── README.md
+```
+
+---
+
+## 9. Future Considerations
+
+### Planned Enhancements
+
+- Server-side synchronization with PostgreSQL backend
+- Multi-tenancy support for multiple institutions
+- Advanced reporting with charts and dashboards
+- Mobile companion app
+- Document management integration
+
+### Technical Debt
+
+- Form validation could use a validation library (zod)
+- Test coverage currently 0% (unit tests needed)
+- No CI/CD pipeline configured
+- No ESLint/Prettier enforcement
+
+---
+
+*Architecture documentation follows Modulifyr Technical Standards*
