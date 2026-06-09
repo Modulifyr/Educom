@@ -20,26 +20,25 @@ import './index.css';
 
 function ModuleRouter({ activeModule }: { activeModule: string }) {
   switch (activeModule) {
-    case 'dashboard': return <Dashboard />;
-    case 'students': return <StudentsModule />;
-    case 'staff': return <StaffModule />;
+    case 'dashboard':  return <Dashboard />;
+    case 'students':   return <StudentsModule />;
+    case 'staff':      return <StaffModule />;
     case 'attendance': return <AttendanceModule />;
-    case 'salary': return <SalaryModule />;
-    case 'fees': return <FeesModule />;
-    case 'inventory': return <InventoryModule />;
-    case 'courses': return <CoursesModule />;
-    case 'exams': return <ExamsModule />;
-    case 'ledger': return <LedgerModule />;
-    case 'reports': return <ReportsModule />;
-    case 'users': return <UsersModule />;
-    case 'settings': return <SettingsModule />;
-    default: return <Dashboard />;
+    case 'salary':     return <SalaryModule />;
+    case 'fees':       return <FeesModule />;
+    case 'inventory':  return <InventoryModule />;
+    case 'courses':    return <CoursesModule />;
+    case 'exams':      return <ExamsModule />;
+    case 'ledger':     return <LedgerModule />;
+    case 'reports':    return <ReportsModule />;
+    case 'users':      return <UsersModule />;
+    case 'settings':   return <SettingsModule />;
+    default:           return <Dashboard />;
   }
 }
 
 function MainLayout() {
   const { activeModule } = useAppStore();
-
   return (
     <div className="h-screen flex flex-col bg-slate-100">
       <div className="flex-1 flex overflow-hidden">
@@ -60,48 +59,12 @@ export function App() {
     initialize();
   }, [initialize]);
 
-  useEffect(() => {
-    const initDemo = async () => {
-      const { db, isLoading } = useAppStore.getState();
-      if (db && !isLoading) {
-        const users = await db.users.getAll();
-        if (users.length === 0) {
-          await db.users.create({
-            username: 'admin',
-            fullName: 'System Administrator',
-            role: 'admin',
-            email: 'admin@educom.local'
-          });
-          await db.users.create({
-            username: 'manager',
-            fullName: 'School Manager',
-            role: 'management',
-            email: 'manager@educom.local'
-          });
-          await db.users.create({
-            username: 'finance',
-            fullName: 'Finance Officer',
-            role: 'finance',
-            email: 'finance@educom.local'
-          });
-          await db.users.create({
-            username: 'teacher',
-            fullName: 'John Teacher',
-            role: 'teacher',
-            email: 'teacher@educom.local'
-          });
-        }
-      }
-    };
-    initDemo();
-  }, [isLoading]);
-
   if (isLoading) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-100">
         <div className="text-center">
-          <div className="w-16 h-16 border-4 border-primary-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600">Loading Educom...</p>
+          <div className="w-16 h-16 border-4 border-primary-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-slate-600">Loading Educom…</p>
         </div>
       </div>
     );

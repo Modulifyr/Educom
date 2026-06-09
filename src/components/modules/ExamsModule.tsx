@@ -1,7 +1,25 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '../../store/appStore';
 import type { ExamRecord, Student, Course } from '../../types';
-import { FileText, Plus, Edit2 } from 'lucide-react';
+import { FileText, Plus, Edit2, X, Save } from 'lucide-react';
+
+interface ExamFormData {
+  studentId: string;
+  courseId: string;
+  examType: string;
+  marks: string;
+  maxMarks: string;
+  remarks: string;
+}
+
+const initialFormData: ExamFormData = {
+  studentId: '',
+  courseId: '',
+  examType: 'quiz',
+  marks: '',
+  maxMarks: '100',
+  remarks: ''
+};
 
 export function ExamsModule() {
   const { db, hasPermission } = useAppStore();
@@ -10,6 +28,10 @@ export function ExamsModule() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCourse, setFilterCourse] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [editingExam, setEditingExam] = useState<ExamRecord | null>(null);
+  const [formData, setFormData] = useState<ExamFormData>(initialFormData);
+  const [saving, setSaving] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!db) return;
@@ -29,6 +51,62 @@ export function ExamsModule() {
     loadData();
   }, [loadData]);
 
+  const openAddModal = () => {
+    setEditingExam(null);
+    setFormData(initialFormData);
+    setShowModal(true);
+  };
+
+  const openEditModal = (exam: ExamRecord) => {
+    setEditingExam(exam);
+    setFormData({
+      studentId: exam.studentId,
+      courseId: exam.courseId,
+      examType: exam.examType,
+      marks: String(exam.marks),
+      maxMarks: String(exam.maxMarks),
+      remarks: exam.remarks || ''
+    });
+    setShowModal(true);
+  };
+
+  const handleSave = async () => {
+    if (!db) return;
+    if (!formData.studentId || !formData.courseId || !formData.marks) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingExam) {
+        await db.exams.update(editingExam.id, {
+          marks: Number(formData.marks),
+          maxMarks: Number(formData.maxMarks),
+          examType: formData.examType as 'quiz' | 'midterm' | 'final' | 'assignment',
+          remarks: formData.remarks || undefined,
+          gradedAt: new Date().toISOString()
+        });
+      } else {
+        await db.exams.create({
+          studentId: formData.studentId,
+          courseId: formData.courseId,
+          examType: formData.examType as 'quiz' | 'midterm' | 'final' | 'assignment',
+          marks: Number(formData.marks),
+          maxMarks: Number(formData.maxMarks),
+          remarks: formData.remarks || undefined,
+          gradedAt: new Date().toISOString()
+        });
+      }
+      setShowModal(false);
+      loadData();
+    } catch (error) {
+      console.error('Error saving exam:', error);
+      alert('Failed to save exam record');
+    }
+    setSaving(false);
+  };
+
   const averageScore = records.length > 0
     ? records.reduce((sum, r) => sum + (r.marks / r.maxMarks * 100), 0) / records.length
     : 0;
@@ -42,13 +120,16 @@ export function ExamsModule() {
     return 'F';
   };
 
+  const canEdit = hasPermission('exams:grade');
+  const canCreate = hasPermission('exams:create');
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800">Examination and Grading</h1>
-        {hasPermission('exams:create') && (
+        {canCreate && (
           <button
-            onClick={() => {}}
+            onClick={openAddModal}
             className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors flex items-center gap-2"
           >
             <Plus size={18} />
@@ -126,7 +207,7 @@ export function ExamsModule() {
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Marks</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Percentage</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Grade</th>
-                  {hasPermission('exams:grade') && (
+                  {(canEdit) && (
                     <th className="px-4 py-3 text-right text-sm font-semibold text-slate-600">Actions</th>
                   )}
                 </tr>
@@ -154,13 +235,18 @@ export function ExamsModule() {
                           {getGrade(percentage)}
                         </span>
                       </td>
-                      {hasPermission('exams:grade') && (
-                        <td className="px-4 py-3 text-right">
-                          <button className="p-2 text-primary-600 hover:bg-primary-50 rounded">
-                            <Edit2 size={16} />
-                          </button>
-                        </td>
+                      {(canEdit) && (
+                    <td className="px-4 py-3 text-right">
+                      {canEdit && (
+                        <button
+                          onClick={() => openEditModal(record)}
+                          className="p-2 text-primary-600 hover:bg-primary-50 rounded"
+                        >
+                          <Edit2 size={16} />
+                        </button>
                       )}
+                    </td>
+                  )}
                     </tr>
                   );
                 })}
@@ -169,6 +255,129 @@ export function ExamsModule() {
           </div>
         )}
       </div>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-6 border-b border-slate-200">
+              <h2 className="text-xl font-semibold text-slate-800">
+                {editingExam ? 'Edit Exam Record' : 'Add Exam Record'}
+              </h2>
+              <button
+                onClick={() => setShowModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Student <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={formData.studentId}
+                  onChange={e => setFormData({ ...formData, studentId: e.target.value })}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="">Select Student</option>
+                  {students.map(s => (
+                    <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.admissionNumber})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Course <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={formData.courseId}
+                  onChange={e => setFormData({ ...formData, courseId: e.target.value })}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="">Select Course</option>
+                  {courses.map(c => (
+                    <option key={c.id} value={c.id}>{c.code} - {c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Exam Type <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={formData.examType}
+                    onChange={e => setFormData({ ...formData, examType: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  >
+                    <option value="test">Test</option>
+                    <option value="quiz">Quiz</option>
+                    <option value="midterm">Midterm</option>
+                    <option value="final">Final</option>
+                    <option value="assignment">Assignment</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Marks <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.marks}
+                    onChange={e => setFormData({ ...formData, marks: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Max Marks <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.maxMarks}
+                    onChange={e => setFormData({ ...formData, maxMarks: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="100"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Remarks</label>
+                <textarea
+                  value={formData.remarks}
+                  onChange={e => setFormData({ ...formData, remarks: e.target.value })}
+                  rows={2}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Add any remarks..."
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 bg-slate-50">
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-4 py-2 text-slate-700 hover:bg-slate-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                <Save size={18} />
+                {saving ? 'Saving...' : 'Save Exam'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

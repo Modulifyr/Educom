@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api';
 import type {
   User, Student, Staff, AttendanceRecord, SalaryRecord,
   FeeRecord, InventoryItem, Course, ExamRecord, LedgerEntry, SyncStatus
@@ -98,568 +99,487 @@ export interface DatabaseService {
   };
 }
 
+interface RustUser {
+  id: string;
+  username: string;
+  role: string;
+  full_name: string;
+  email: string | null;
+  created_at: string;
+  last_login: string | null;
+}
+
+interface RustStudent {
+  id: string;
+  admission_number: string;
+  first_name: string;
+  last_name: string;
+  date_of_birth: string;
+  gender: string;
+  class_id: string;
+  section: string | null;
+  parent_name: string;
+  parent_phone: string;
+  address: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RustStaff {
+  id: string;
+  employee_id: string;
+  first_name: string;
+  last_name: string;
+  designation: string;
+  department: string;
+  date_of_joining: string;
+  phone: string;
+  email: string | null;
+  salary: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+function toUser(r: RustUser): User {
+  return {
+    id: r.id,
+    username: r.username,
+    role: r.role as User['role'],
+    fullName: r.full_name,
+    email: r.email ?? undefined,
+    createdAt: r.created_at,
+    lastLogin: r.last_login ?? undefined,
+  };
+}
+
+function toStudent(r: RustStudent): Student {
+  return {
+    id: r.id,
+    admissionNumber: r.admission_number,
+    firstName: r.first_name,
+    lastName: r.last_name,
+    dateOfBirth: r.date_of_birth,
+    gender: r.gender as Student['gender'],
+    classId: r.class_id,
+    section: r.section ?? undefined,
+    parentName: r.parent_name,
+    parentPhone: r.parent_phone,
+    address: r.address,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function toStaff(r: RustStaff): Staff {
+  return {
+    id: r.id,
+    employeeId: r.employee_id,
+    firstName: r.first_name,
+    lastName: r.last_name,
+    designation: r.designation,
+    department: r.department,
+    dateOfJoining: r.date_of_joining,
+    phone: r.phone,
+    email: r.email ?? undefined,
+    salary: r.salary,
+    isActive: r.is_active,
+    createdAt: r.created_at,
+  };
+}
+
+function fromUser(u: User): Partial<RustUser> {
+  return {
+    username: u.username,
+    role: u.role,
+    full_name: u.fullName,
+    email: u.email ?? null,
+  };
+}
+
+function fromStudent(s: Student): Omit<RustStudent, 'id' | 'created_at' | 'updated_at'> {
+  return {
+    admission_number: s.admissionNumber,
+    first_name: s.firstName,
+    last_name: s.lastName,
+    date_of_birth: s.dateOfBirth,
+    gender: s.gender,
+    class_id: s.classId,
+    section: s.section ?? null,
+    parent_name: s.parentName,
+    parent_phone: s.parentPhone,
+    address: s.address,
+  };
+}
+
+function fromStaff(st: Staff): Omit<RustStaff, 'id' | 'created_at'> {
+  return {
+    employee_id: st.employeeId,
+    first_name: st.firstName,
+    last_name: st.lastName,
+    designation: st.designation,
+    department: st.department,
+    date_of_joining: st.dateOfJoining,
+    phone: st.phone,
+    email: st.email ?? null,
+    salary: st.salary,
+    is_active: st.isActive,
+  };
+}
+
 export function createDatabaseService(): DatabaseService {
-  const storageKey = 'educom_db';
-  
-  const getStorage = <T>(key: string): T[] => {
-    const data = localStorage.getItem(`${storageKey}_${key}`);
-    return data ? JSON.parse(data) : [];
-  };
-  
-  const setStorage = <T>(key: string, data: T): void => {
-    localStorage.setItem(`${storageKey}_${key}`, JSON.stringify(data));
-  };
-  
-  const generateId = (): string => {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  };
-  
-  const now = (): string => new Date().toISOString();
-  
   return {
     async initialize() {
-      if (!localStorage.getItem(`${storageKey}_initialized`)) {
-        setStorage('users', []);
-        setStorage('students', []);
-        setStorage('staff', []);
-        setStorage('attendance', []);
-        setStorage('salary', []);
-        setStorage('fees', []);
-        setStorage('inventory', []);
-        setStorage('courses', []);
-        setStorage('exams', []);
-        setStorage('ledger', []);
-        setStorage('sync_pending', []);
-        localStorage.setItem(`${storageKey}_initialized`, 'true');
-      }
+      // Tauri backend initializes the SQLite DB on app start
     },
     
     users: {
       async getAll(): Promise<User[]> {
-        return getStorage<User>('users');
+        const rustUsers = await invoke<RustUser[]>('get_users');
+        return rustUsers.map(toUser);
       },
       
       async getById(id: string): Promise<User | null> {
-        const users = getStorage<User>('users');
+        const users = await this.getAll();
         return users.find(u => u.id === id) || null;
       },
       
       async create(userData): Promise<User> {
-        const users = getStorage<User>('users');
-        const user: User = {
-          ...userData,
-          id: generateId(),
-          createdAt: now()
-        };
-        users.push(user);
-        setStorage('users', users);
-        return user;
+        const rustUser = await invoke<RustUser>('create_user', { 
+          username: userData.username,
+          role: userData.role,
+          fullName: userData.fullName,
+          email: userData.email 
+        });
+        return toUser(rustUser);
       },
       
       async update(id, data): Promise<User> {
-        const users = getStorage<User>('users');
-        const index = users.findIndex(u => u.id === id);
-        if (index === -1) throw new Error('User not found');
-        users[index] = { ...users[index], ...data };
-        setStorage('users', users);
-        return users[index];
+        const rustUser = await invoke<RustUser>('update_user', { 
+          id, 
+          username: data.username,
+          role: data.role,
+          fullName: data.fullName,
+          email: data.email 
+        });
+        return toUser(rustUser);
       },
       
       async delete(id): Promise<void> {
-        const users = getStorage<User>('users');
-        setStorage('users', users.filter(u => u.id !== id));
+        await invoke('delete_user', { id });
       },
       
       async authenticate(username): Promise<User | null> {
-        const users = getStorage<User>('users');
-        return users.find(u => u.username === username) || null;
+        const rustUser = await invoke<RustUser | null>('authenticate_user', { username });
+        return rustUser ? toUser(rustUser) : null;
       }
     },
     
     students: {
       async getAll(filters?): Promise<Student[]> {
-        let students = getStorage<Student>('students');
+        const rustStudents = await invoke<RustStudent[]>('get_students');
+        let students = rustStudents.map(toStudent);
         if (filters?.classId) students = students.filter(s => s.classId === filters.classId);
         return students;
       },
       
       async getById(id): Promise<Student | null> {
-        const students = getStorage<Student>('students');
+        const students = await this.getAll();
         return students.find(s => s.id === id) || null;
       },
       
       async create(studentData): Promise<Student> {
-        const students = getStorage<Student>('students');
-        const student: Student = {
-          ...studentData,
-          id: generateId(),
-          createdAt: now(),
-          updatedAt: now()
-        };
-        students.push(student);
-        setStorage('students', students);
-        return student;
+        const rustStudent = await invoke<RustStudent>('create_student', { 
+          data: fromStudent(studentData) 
+        });
+        return toStudent(rustStudent);
       },
       
       async update(id, data): Promise<Student> {
-        const students = getStorage<Student>('students');
-        const index = students.findIndex(s => s.id === id);
-        if (index === -1) throw new Error('Student not found');
-        students[index] = { ...students[index], ...data, updatedAt: now() };
-        setStorage('students', students);
-        return students[index];
+        const rustStudent = await invoke<RustStudent>('update_student', { 
+          id, 
+          data: fromStudent(data) 
+        });
+        return toStudent(rustStudent);
       },
       
       async delete(id): Promise<void> {
-        const students = getStorage<Student>('students');
-        setStorage('students', students.filter(s => s.id !== id));
+        await invoke('delete_student', { id });
       },
       
       async bulkImport(records): Promise<number> {
-        const students = getStorage<Student>('students');
-        const newStudents = records.map(r => ({
-          ...r,
-          id: generateId(),
-          createdAt: now(),
-          updatedAt: now()
-        }));
-        setStorage('students', [...students, ...newStudents]);
-        return newStudents.length;
+        let count = 0;
+        for (const record of records) {
+          await this.create(record);
+          count++;
+        }
+        return count;
       }
     },
     
     staff: {
       async getAll(filters?): Promise<Staff[]> {
-        let staff = getStorage<Staff>('staff');
-        if (filters?.department) staff = staff.filter(s => s.department === filters.department);
-        if (filters?.isActive !== undefined) staff = staff.filter(s => s.isActive === filters.isActive);
-        return staff;
+        const rustStaff = await invoke<RustStaff[]>('get_staff');
+        let staffMembers = rustStaff.map(toStaff);
+        if (filters?.department) staffMembers = staffMembers.filter(s => s.department === filters.department);
+        if (filters?.isActive !== undefined) staffMembers = staffMembers.filter(s => s.isActive === filters.isActive);
+        return staffMembers;
       },
       
       async getById(id): Promise<Staff | null> {
-        const staff = getStorage<Staff>('staff');
-        return staff.find(s => s.id === id) || null;
+        const staffMembers = await this.getAll();
+        return staffMembers.find(s => s.id === id) || null;
       },
       
       async create(staffData): Promise<Staff> {
-        const staff = getStorage<Staff>('staff');
-        const newStaff: Staff = {
-          ...staffData,
-          id: generateId(),
-          createdAt: now()
-        };
-        staff.push(newStaff);
-        setStorage('staff', staff);
-        return newStaff;
+        const rustStaff = await invoke<RustStaff>('create_staff', { 
+          data: fromStaff(staffData) 
+        });
+        return toStaff(rustStaff);
       },
       
       async update(id, data): Promise<Staff> {
-        const staff = getStorage<Staff>('staff');
-        const index = staff.findIndex(s => s.id === id);
-        if (index === -1) throw new Error('Staff not found');
-        staff[index] = { ...staff[index], ...data };
-        setStorage('staff', staff);
-        return staff[index];
+        const rustStaff = await invoke<RustStaff>('update_staff', { 
+          id, 
+          data: fromStaff(data) 
+        });
+        return toStaff(rustStaff);
       },
       
       async delete(id): Promise<void> {
-        const staff = getStorage<Staff>('staff');
-        setStorage('staff', staff.filter(s => s.id !== id));
+        await invoke('delete_staff', { id });
       },
       
       async bulkImport(records): Promise<number> {
-        const staff = getStorage<Staff>('staff');
-        const newStaff = records.map(r => ({
-          ...r,
-          id: generateId(),
-          createdAt: now()
-        }));
-        setStorage('staff', [...staff, ...newStaff]);
-        return newStaff.length;
+        let count = 0;
+        for (const record of records) {
+          await this.create(record);
+          count++;
+        }
+        return count;
       }
     },
     
     attendance: {
       async getAll(filters?): Promise<AttendanceRecord[]> {
-        let records = getStorage<AttendanceRecord>('attendance');
-        if (filters?.date) records = records.filter(r => r.date === filters.date);
-        if (filters?.studentId) records = records.filter(r => r.studentId === filters.studentId);
-        if (filters?.staffId) records = records.filter(r => r.staffId === filters.staffId);
+        const records = await invoke<AttendanceRecord[]>('get_attendance', { filters });
         return records;
       },
       
       async create(recordData): Promise<AttendanceRecord> {
-        const records = getStorage<AttendanceRecord>('attendance');
-        const record: AttendanceRecord = {
-          ...recordData,
-          id: generateId(),
-          createdAt: now()
-        };
-        records.push(record);
-        setStorage('attendance', records);
+        const record = await invoke<AttendanceRecord>('create_attendance', { data: recordData });
         return record;
       },
       
       async bulkCreate(recordsData): Promise<number> {
-        const records = getStorage<AttendanceRecord>('attendance');
-        const newRecords = recordsData.map(r => ({
-          ...r,
-          id: generateId(),
-          createdAt: now()
-        }));
-        setStorage('attendance', [...records, ...newRecords]);
-        return newRecords.length;
+        let count = 0;
+        for (const record of recordsData) {
+          await this.create(record);
+          count++;
+        }
+        return count;
       },
       
       async getByDateRange(startDate, endDate): Promise<AttendanceRecord[]> {
-        const records = getStorage<AttendanceRecord>('attendance');
-        return records.filter(r => r.date >= startDate && r.date <= endDate);
+        const records = await invoke<AttendanceRecord[]>('get_attendance_by_date_range', { startDate, endDate });
+        return records;
       }
     },
     
     salary: {
       async getAll(filters?): Promise<SalaryRecord[]> {
-        let records = getStorage<SalaryRecord>('salary');
-        if (filters?.staffId) records = records.filter(r => r.staffId === filters.staffId);
-        if (filters?.month) records = records.filter(r => r.month === filters.month);
-        if (filters?.year) records = records.filter(r => r.year === filters.year);
-        if (filters?.status) records = records.filter(r => r.status === filters.status);
+        const records = await invoke<SalaryRecord[]>('get_salary_records', { filters });
         return records;
       },
       
       async create(recordData): Promise<SalaryRecord> {
-        const records = getStorage<SalaryRecord>('salary');
-        const record: SalaryRecord = {
-          ...recordData,
-          id: generateId(),
-          createdAt: now()
-        };
-        records.push(record);
-        setStorage('salary', records);
+        const record = await invoke<SalaryRecord>('create_salary_record', { data: recordData });
         return record;
       },
       
       async update(id, data): Promise<SalaryRecord> {
-        const records = getStorage<SalaryRecord>('salary');
-        const index = records.findIndex(r => r.id === id);
-        if (index === -1) throw new Error('Salary record not found');
-        records[index] = { ...records[index], ...data };
-        setStorage('salary', records);
-        return records[index];
+        const record = await invoke<SalaryRecord>('update_salary_record', { id, data });
+        return record;
       },
       
       async processBulk(staffIds, month, year): Promise<SalaryRecord[]> {
-        const staff = getStorage<Staff>('staff');
-        const records = getStorage<SalaryRecord>('salary');
-        const newRecords: SalaryRecord[] = [];
-        
-        for (const staffId of staffIds) {
-          const staffMember = staff.find(s => s.id === staffId);
-          if (staffMember) {
-            const record: SalaryRecord = {
-              id: generateId(),
-              staffId,
-              month,
-              year,
-              baseSalary: staffMember.salary,
-              allowances: 0,
-              deductions: 0,
-              netSalary: staffMember.salary,
-              status: 'pending',
-              processedBy: 'system',
-              createdAt: now()
-            };
-            newRecords.push(record);
-          }
-        }
-        
-        setStorage('salary', [...records, ...newRecords]);
-        return newRecords;
+        const records = await invoke<SalaryRecord[]>('process_bulk_salary', { staffIds, month, year });
+        return records;
       }
     },
     
     fees: {
       async getAll(filters?): Promise<FeeRecord[]> {
-        let records = getStorage<FeeRecord>('fees');
-        if (filters?.studentId) records = records.filter(r => r.studentId === filters.studentId);
-        if (filters?.status) records = records.filter(r => r.status === filters.status);
-        if (filters?.academicYear) records = records.filter(r => r.academicYear === filters.academicYear);
+        const records = await invoke<FeeRecord[]>('get_fee_records', { filters });
         return records;
       },
       
       async create(recordData): Promise<FeeRecord> {
-        const records = getStorage<FeeRecord>('fees');
-        const record: FeeRecord = {
-          ...recordData,
-          id: generateId(),
-          createdAt: now()
-        };
-        records.push(record);
-        setStorage('fees', records);
+        const record = await invoke<FeeRecord>('create_fee_record', { data: recordData });
         return record;
       },
       
       async update(id, data): Promise<FeeRecord> {
-        const records = getStorage<FeeRecord>('fees');
-        const index = records.findIndex(r => r.id === id);
-        if (index === -1) throw new Error('Fee record not found');
-        records[index] = { ...records[index], ...data };
-        setStorage('fees', records);
-        return records[index];
+        const record = await invoke<FeeRecord>('update_fee_record', { id, data });
+        return record;
       },
       
       async recordPayment(id, amount): Promise<FeeRecord> {
-        const records = getStorage<FeeRecord>('fees');
-        const index = records.findIndex(r => r.id === id);
-        if (index === -1) throw new Error('Fee record not found');
-        const record = records[index];
-        record.paidAmount += amount;
-        record.paymentDate = now();
-        if (record.paidAmount >= record.amount) {
-          record.status = 'paid';
-        } else if (record.paidAmount > 0) {
-          record.status = 'partial';
-        }
-        setStorage('fees', records);
+        const record = await invoke<FeeRecord>('record_fee_payment', { id, amount });
         return record;
       },
       
       async getStudentBalance(studentId, academicYear): Promise<number> {
-        const records = await this.getAll({ studentId, academicYear });
-        return records.reduce((sum, r) => sum + (r.amount - r.paidAmount), 0);
+        const balance = await invoke<number>('get_student_balance', { studentId, academicYear });
+        return balance;
       },
       
       async bulkImport(recordsData): Promise<number> {
-        const records = getStorage<FeeRecord>('fees');
-        const newRecords = recordsData.map(r => ({
-          ...r,
-          id: generateId(),
-          createdAt: now()
-        }));
-        setStorage('fees', [...records, ...newRecords]);
-        return newRecords.length;
+        let count = 0;
+        for (const record of recordsData) {
+          await this.create(record);
+          count++;
+        }
+        return count;
       }
     },
     
     inventory: {
       async getAll(filters?): Promise<InventoryItem[]> {
-        let items = getStorage<InventoryItem>('inventory');
-        if (filters?.category) items = items.filter(i => i.category === filters.category);
+        const items = await invoke<InventoryItem[]>('get_inventory_items', { filters });
         return items;
       },
       
       async getById(id): Promise<InventoryItem | null> {
-        const items = getStorage<InventoryItem>('inventory');
+        const items = await this.getAll();
         return items.find(i => i.id === id) || null;
       },
       
       async create(itemData): Promise<InventoryItem> {
-        const items = getStorage<InventoryItem>('inventory');
-        const item: InventoryItem = {
-          ...itemData,
-          id: generateId(),
-          createdAt: now(),
-          updatedAt: now()
-        };
-        items.push(item);
-        setStorage('inventory', items);
+        const item = await invoke<InventoryItem>('create_inventory_item', { data: itemData });
         return item;
       },
       
       async update(id, data): Promise<InventoryItem> {
-        const items = getStorage<InventoryItem>('inventory');
-        const index = items.findIndex(i => i.id === id);
-        if (index === -1) throw new Error('Inventory item not found');
-        items[index] = { ...items[index], ...data, updatedAt: now() };
-        setStorage('inventory', items);
-        return items[index];
+        const item = await invoke<InventoryItem>('update_inventory_item', { id, data });
+        return item;
       },
       
       async delete(id): Promise<void> {
-        const items = getStorage<InventoryItem>('inventory');
-        setStorage('inventory', items.filter(i => i.id !== id));
+        await invoke('delete_inventory_item', { id });
       },
       
       async updateQuantity(id, quantity): Promise<InventoryItem> {
-        const items = getStorage<InventoryItem>('inventory');
-        const index = items.findIndex(i => i.id === id);
-        if (index === -1) throw new Error('Inventory item not found');
-        items[index].quantity = quantity;
-        items[index].updatedAt = now();
-        setStorage('inventory', items);
-        return items[index];
+        const item = await invoke<InventoryItem>('update_inventory_quantity', { id, quantity });
+        return item;
       },
       
       async getLowStock(): Promise<InventoryItem[]> {
-        const items = getStorage<InventoryItem>('inventory');
-        return items.filter(i => i.reorderLevel && i.quantity <= i.reorderLevel);
+        const items = await invoke<InventoryItem[]>('get_low_stock_items');
+        return items;
       },
       
       async bulkImport(recordsData): Promise<number> {
-        const items = getStorage<InventoryItem>('inventory');
-        const newItems = recordsData.map(r => ({
-          ...r,
-          id: generateId(),
-          createdAt: now(),
-          updatedAt: now()
-        }));
-        setStorage('inventory', [...items, ...newItems]);
-        return newItems.length;
+        let count = 0;
+        for (const record of recordsData) {
+          await this.create(record);
+          count++;
+        }
+        return count;
       }
     },
     
     courses: {
       async getAll(filters?): Promise<Course[]> {
-        let courses = getStorage<Course>('courses');
-        if (filters?.classId) courses = courses.filter(c => c.classId === filters.classId);
-        if (filters?.teacherId) courses = courses.filter(c => c.teacherId === filters.teacherId);
+        const courses = await invoke<Course[]>('get_courses', { filters });
         return courses;
       },
       
       async getById(id): Promise<Course | null> {
-        const courses = getStorage<Course>('courses');
+        const courses = await this.getAll();
         return courses.find(c => c.id === id) || null;
       },
       
       async create(courseData): Promise<Course> {
-        const courses = getStorage<Course>('courses');
-        const course: Course = {
-          ...courseData,
-          id: generateId(),
-          createdAt: now()
-        };
-        courses.push(course);
-        setStorage('courses', courses);
+        const course = await invoke<Course>('create_course', { data: courseData });
         return course;
       },
       
       async update(id, data): Promise<Course> {
-        const courses = getStorage<Course>('courses');
-        const index = courses.findIndex(c => c.id === id);
-        if (index === -1) throw new Error('Course not found');
-        courses[index] = { ...courses[index], ...data };
-        setStorage('courses', courses);
-        return courses[index];
+        const course = await invoke<Course>('update_course', { id, data });
+        return course;
       },
       
       async delete(id): Promise<void> {
-        const courses = getStorage<Course>('courses');
-        setStorage('courses', courses.filter(c => c.id !== id));
+        await invoke('delete_course', { id });
       }
     },
     
     exams: {
       async getAll(filters?): Promise<ExamRecord[]> {
-        let records = getStorage<ExamRecord>('exams');
-        if (filters?.studentId) records = records.filter(r => r.studentId === filters.studentId);
-        if (filters?.courseId) records = records.filter(r => r.courseId === filters.courseId);
+        const records = await invoke<ExamRecord[]>('get_exam_records', { filters });
         return records;
       },
       
       async create(recordData): Promise<ExamRecord> {
-        const records = getStorage<ExamRecord>('exams');
-        const record: ExamRecord = {
-          ...recordData,
-          id: generateId(),
-          createdAt: now()
-        };
-        records.push(record);
-        setStorage('exams', records);
+        const record = await invoke<ExamRecord>('create_exam_record', { data: recordData });
         return record;
       },
       
       async update(id, data): Promise<ExamRecord> {
-        const records = getStorage<ExamRecord>('exams');
-        const index = records.findIndex(r => r.id === id);
-        if (index === -1) throw new Error('Exam record not found');
-        records[index] = { ...records[index], ...data, gradedAt: now() };
-        setStorage('exams', records);
-        return records[index];
+        const record = await invoke<ExamRecord>('update_exam_record', { id, data });
+        return record;
       },
       
       async getStudentResults(studentId): Promise<ExamRecord[]> {
-        return this.getAll({ studentId });
+        const records = await invoke<ExamRecord[]>('get_student_results', { studentId });
+        return records;
       },
       
       async getCourseAverage(courseId): Promise<number> {
-        const records = await this.getAll({ courseId });
-        if (records.length === 0) return 0;
-        const sum = records.reduce((acc, r) => acc + (r.marks / r.maxMarks * 100), 0);
-        return sum / records.length;
+        const avg = await invoke<number>('get_course_average', { courseId });
+        return avg;
       }
     },
     
     ledger: {
       async getAll(filters?): Promise<LedgerEntry[]> {
-        let entries = getStorage<LedgerEntry>('ledger');
-        if (filters?.accountCode) entries = entries.filter(e => e.accountCode === filters.accountCode);
-        if (filters?.startDate) entries = entries.filter(e => e.date >= filters.startDate!);
-        if (filters?.endDate) entries = entries.filter(e => e.date <= filters.endDate!);
+        const entries = await invoke<LedgerEntry[]>('get_ledger_entries', { filters });
         return entries;
       },
       
       async create(entryData): Promise<LedgerEntry> {
-        const entries = getStorage<LedgerEntry>('ledger');
-        const entry: LedgerEntry = {
-          ...entryData,
-          id: generateId(),
-          createdAt: now()
-        };
-        entries.push(entry);
-        setStorage('ledger', entries);
+        const entry = await invoke<LedgerEntry>('create_ledger_entry', { data: entryData });
         return entry;
       },
       
       async getAccountBalance(accountCode): Promise<number> {
-        const entries = await this.getAll({ accountCode });
-        const lastEntry = entries.sort((a, b) => b.date.localeCompare(a.date))[0];
-        return lastEntry?.balance || 0;
+        const balance = await invoke<number>('get_account_balance', { accountCode });
+        return balance;
       },
       
       async getTrialBalance(): Promise<{ accountCode: string; accountName: string; debit: number; credit: number }[]> {
-        const entries = getStorage<LedgerEntry>('ledger');
-        const accountMap = new Map<string, { accountCode: string; accountName: string; debit: number; credit: number }>();
-        
-        for (const entry of entries) {
-          const existing = accountMap.get(entry.accountCode) || {
-            accountCode: entry.accountCode,
-            accountName: entry.accountName,
-            debit: 0,
-            credit: 0
-          };
-          existing.debit += entry.debit;
-          existing.credit += entry.credit;
-          accountMap.set(entry.accountCode, existing);
-        }
-        
-        return Array.from(accountMap.values());
+        const trialBalance = await invoke<{ accountCode: string; accountName: string; debit: number; credit: number }[]>('get_trial_balance');
+        return trialBalance;
       },
       
       async generateFinancialReport(startDate, endDate): Promise<LedgerEntry[]> {
-        return this.getAll({ startDate, endDate });
+        const entries = await invoke<LedgerEntry[]>('generate_financial_report', { startDate, endDate });
+        return entries;
       }
     },
     
     sync: {
       async getStatus(): Promise<SyncStatus> {
-        const pendingChanges = getStorage<{ timestamp: string }>('sync_pending');
-        return {
-          lastSyncTime: localStorage.getItem(`${storageKey}_last_sync`) || now(),
-          pendingChanges: pendingChanges.length,
-          syncState: 'idle'
-        };
+        const status = await invoke<SyncStatus>('get_sync_status');
+        return status;
       },
       
       async sync(): Promise<void> {
-        getStorage<unknown>('sync_pending');
-        localStorage.setItem(`${storageKey}_last_sync`, now());
-        setStorage('sync_pending', []);
+        await invoke('sync_data');
       },
       
       addPendingChange(operation, table, recordId, data): void {
-        const pending = getStorage<unknown>('sync_pending');
-        pending.push({ operation, table, recordId, data, timestamp: now() });
-        setStorage('sync_pending', pending);
+        // No-op: Tauri backend handles persistence directly
       }
     }
   };

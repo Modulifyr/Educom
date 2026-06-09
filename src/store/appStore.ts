@@ -11,9 +11,9 @@ interface AppState {
   activeModule: string;
   db: DatabaseService | null;
   syncStatus: SyncStatus;
-  
+
   initialize: () => Promise<void>;
-  login: (username: string) => Promise<boolean>;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
   toggleSidebar: () => void;
   setActiveModule: (module: string) => void;
@@ -34,7 +34,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   syncStatus: {
     lastSyncTime: '',
     pendingChanges: 0,
-    syncState: 'idle'
+    syncState: 'idle',
   },
 
   initialize: async () => {
@@ -43,12 +43,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ db, isLoading: false });
   },
 
-  login: async (username) => {
+  login: async (username, password) => {
     const { db } = get();
     if (!db) return false;
-    
-    const user = await db.users.authenticate(username);
-    
+
+    const user = await db.users.authenticate(username, password);
     if (user) {
       set({ currentUser: user, isAuthenticated: true });
       return true;
@@ -98,17 +97,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   triggerSync: async () => {
     const { db } = get();
     if (!db) return;
-    
+
     set(state => ({ syncStatus: { ...state.syncStatus, syncState: 'syncing' } }));
-    
+
     try {
       await db.sync.sync();
       const status = await db.sync.getStatus();
       set({ syncStatus: status });
     } catch {
       set(state => ({
-        syncStatus: { ...state.syncStatus, syncState: 'error', errorMessage: 'Sync failed' }
+        syncStatus: { ...state.syncStatus, syncState: 'error' },
       }));
     }
-  }
+  },
 }));
