@@ -697,7 +697,7 @@ fn authenticate_user(
     );
 
     match result {
-        Ok((id, uname, role, full_name, email, hash, salt, created_at, last_login)) => {
+        Ok((id, uname, role, full_name, email, hash, salt, created_at, _last_login)) => {
             if !verify_password(&password, &salt, &hash) {
                 return Ok(None);
             }
@@ -898,19 +898,16 @@ fn get_students(state: State<AppState>, class_id: Option<String>) -> Result<Vec<
          FROM students ORDER BY last_name, first_name"
     };
 
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+
     let students = if let Some(cid) = class_id {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         stmt.query_map(params![cid], row_to_student)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
     } else {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         stmt.query_map([], row_to_student)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
-    };
+    }
+    .map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())?;
 
     Ok(students)
 }

@@ -56,8 +56,11 @@ export function App() {
   const { initialize, isLoading, isAuthenticated } = useAppStore();
 
   useEffect(() => {
+    console.log("App initializing...");
     initialize();
   }, [initialize]);
+
+  console.log("isLoading:", isLoading, "isAuthenticated:", isAuthenticated);
 
   if (isLoading) {
     return (
@@ -71,8 +74,10 @@ export function App() {
   }
 
   if (!isAuthenticated) {
+    console.log("Showing login screen");
     return <LoginScreen />;
   }
 
+  console.log("Showing main layout");
   return <MainLayout />;
 }

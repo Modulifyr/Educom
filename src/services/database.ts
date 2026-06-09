@@ -13,7 +13,7 @@ export interface DatabaseService {
     create(user: Omit<User, 'id' | 'createdAt'>): Promise<User>;
     update(id: string, data: Partial<User>): Promise<User>;
     delete(id: string): Promise<void>;
-    authenticate(username: string): Promise<User | null>;
+    authenticate(username: string, password: string): Promise<User | null>;
   };
   
   students: {
@@ -268,8 +268,8 @@ export function createDatabaseService(): DatabaseService {
         await invoke('delete_user', { id });
       },
       
-      async authenticate(username): Promise<User | null> {
-        const rustUser = await invoke<RustUser | null>('authenticate_user', { username });
+      async authenticate(username, password): Promise<User | null> {
+        const rustUser = await invoke<RustUser | null>('authenticate_user', { username, password });
         return rustUser ? toUser(rustUser) : null;
       }
     },
