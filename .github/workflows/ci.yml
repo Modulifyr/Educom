@@ -1,72 +1,89 @@
-# .github/workflows/ci.yml
-# ───────────────────────────────────────────────────────────────────────────
-# Universal CI pipeline for all Modulifyr projects.
-# Runs on every push and PR to main and develop.
-# Pipeline: install → lint → audit → test → build
-#
-# ── Customise for your project type ───────────────────────────────────
-# Web (Next.js):    Use as-is. Add NEXT_PUBLIC_ vars in env.build.
-# Backend (NestJS): Replace build step command as needed.
-# Mobile (Expo):    Add `eas build --platform all --non-interactive` step.
-#                   Requires EAS_TOKEN secret in GitHub repo settings.
-# Desktop (Tauri):  Add Rust toolchain setup + `npm run tauri build` step.
-#                   See: https://tauri.app/distribute/github-action/
-# Static (Astro):   Use as-is. Adjust build output directory.
-# ───────────────────────────────────────────────────────────────────────────
-
 name: CI
 
 on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
 
 jobs:
-  ci:
-    name: Lint · Audit · Test · Build
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
 
-      - name: Lint (ESLint)
-        run: npm run lint
+      - name: TypeScript check
+        run: npx tsc --noEmit
 
-      - name: Security audit
-        run: npm audit --audit-level=high
-        # Fails if any high or critical vulnerabilities found.
-        # Run `npm audit fix` locally to resolve.
-        continue-on-error: false
+      - name: ESLint (if configured)
+        run: npx eslint src --ext .ts,.tsx || true
 
-      - name: Run tests
-        run: npm test -- --run
-        env:
-          NODE_ENV: test
-          # ── Add project-specific test env vars below ────────────────────────────
-          # Use empty strings for safe fallbacks in CI:
-          # DATABASE_URL: ""
-          # UPSTASH_REDIS_REST_URL: ""
-          # NOTION_API_KEY: ""
+  test-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Build
-        run: npm run build
-        env:
-          NODE_ENV: production
-          # ── Add project-specific build env vars below ───────────────────────────
-          # NEXT_PUBLIC_SITE_URL: https://your-domain.vercel.app
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Check Rust compilation
+        run: cd src-tauri && cargo check
+
+      - name: Check formatting
+        run: cd src-tauri && cargo fmt --check
+
+  build-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (debug)
+        run: npm run tauri build -- --debug

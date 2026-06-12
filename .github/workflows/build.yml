@@ -1,0 +1,161 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        type: string
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event.inputs.version }}" != "" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="build-${{ github.run_number }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+  build:
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_prefix: 'Educom-win'
+            extension: '.exe'
+            target: 'x86_64-pc-windows-msvc'
+          - os: macos-latest
+            artifact_prefix: 'Educom-macos'
+            extension: '.app'
+            target: 'x86_64-apple-darwin'
+            # Also build Apple Silicon
+          - os: ubuntu-22.04
+            artifact_prefix: 'Educom-linux'
+            extension: ''
+            target: 'x86_64-unknown-linux-gnu'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.create-release.outputs.version }}
+          releaseName: 'Educom ${{ needs.create-release.outputs.version }}'
+          releaseBody: |
+            ## Educom ${{ needs.create-release.outputs.version }}
+
+            Download the appropriate installer for your platform.
+
+            ### Installation
+            - **Windows**: Run the `.exe` installer
+            - **macOS**: Open `.dmg` and drag to Applications
+            - **Linux**: Run the AppImage or extract the tar.gz
+
+            ### Notes
+            - Requires WebView2 runtime on Windows
+            - Requires WebKit on Linux (usually pre-installed)
+          releaseDraft: true
+          prerelease: false
+
+  build-apple-silicon:
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: 'aarch64-apple-darwin'
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (Apple Silicon)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.create-release.outputs.version }}
+          releaseName: 'Educom ${{ needs.create-release.outputs.version }}'
+          releaseBody: |
+            ## Educom ${{ needs.create-release.outputs.version }} (Apple Silicon)
+
+            Download for macOS with Apple Silicon (M1/M2/M3) chips.
+          releaseDraft: true
+          prerelease: false
+
+  verify:
+    needs: [build, build-apple-silicon]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify builds completed
+        run: |
+          echo "All platform builds completed successfully!"
+          echo "Version: ${{ needs.create-release.outputs.version }}"

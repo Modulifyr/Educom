@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppStore } from './store/appStore';
 import { Sidebar } from './components/layout/Sidebar';
 import { UtilityDock } from './components/layout/UtilityDock';
@@ -16,6 +16,7 @@ import { ReportsModule } from './components/modules/ReportsModule';
 import { UsersModule } from './components/modules/UsersModule';
 import { SettingsModule } from './components/modules/SettingsModule';
 import { LoginScreen } from './components/auth/LoginScreen';
+import { SetupWizard } from './components/auth/SetupWizard';
 import './index.css';
 
 function ModuleRouter({ activeModule }: { activeModule: string }) {
@@ -53,14 +54,18 @@ function MainLayout() {
 }
 
 export function App() {
-  const { initialize, isLoading, isAuthenticated } = useAppStore();
+  const { initialize, isLoading, isAuthenticated, isFirstRun } = useAppStore();
+  const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
     console.log("App initializing...");
-    initialize();
+    initialize().catch((error) => {
+      console.error('Initialization failed:', error);
+      setInitError(error instanceof Error ? error.message : 'Failed to initialize');
+    });
   }, [initialize]);
 
-  console.log("isLoading:", isLoading, "isAuthenticated:", isAuthenticated);
+  console.log("isLoading:", isLoading, "isAuthenticated:", isAuthenticated, "isFirstRun:", isFirstRun);
 
   if (isLoading) {
     return (
@@ -73,7 +78,28 @@ export function App() {
     );
   }
 
+  if (initError) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-100">
+        <div className="text-center p-8 bg-white rounded-xl shadow-lg max-w-md">
+          <h2 className="text-xl font-bold text-red-600 mb-4">Initialization Error</h2>
+          <p className="text-slate-600 mb-4">{initError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
+    if (isFirstRun) {
+      console.log("Showing setup wizard (first run)");
+      return <SetupWizard />;
+    }
     console.log("Showing login screen");
     return <LoginScreen />;
   }

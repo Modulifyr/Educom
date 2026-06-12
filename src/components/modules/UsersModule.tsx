@@ -81,7 +81,8 @@ export function UsersModule() {
           username: formData.username,
           fullName: formData.fullName,
           role: formData.role,
-          email: formData.email || undefined
+          email: formData.email || undefined,
+          password: 'password123'
         });
       }
       setShowModal(false);

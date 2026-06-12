@@ -108,7 +108,7 @@ export function ReportsModule() {
           data = await db.exams.getAll();
           break;
         case 'financial':
-          data = await db.ledger.generateFinancialReport(startDate, endDate);
+          data = await db.ledger.getAll({ startDate, endDate });
           break;
       }
 

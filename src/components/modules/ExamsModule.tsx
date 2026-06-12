@@ -83,9 +83,8 @@ export function ExamsModule() {
         await db.exams.update(editingExam.id, {
           marks: Number(formData.marks),
           maxMarks: Number(formData.maxMarks),
-          examType: formData.examType as 'quiz' | 'midterm' | 'final' | 'assignment',
+          gradedBy: 'system',
           remarks: formData.remarks || undefined,
-          gradedAt: new Date().toISOString()
         });
       } else {
         await db.exams.create({
@@ -95,7 +94,6 @@ export function ExamsModule() {
           marks: Number(formData.marks),
           maxMarks: Number(formData.maxMarks),
           remarks: formData.remarks || undefined,
-          gradedAt: new Date().toISOString()
         });
       }
       setShowModal(false);

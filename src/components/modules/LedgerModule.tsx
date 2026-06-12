@@ -38,7 +38,7 @@ export function LedgerModule() {
   const loadEntries = useCallback(async () => {
     if (!db) return;
     setLoading(true);
-    const data = await db.ledger.generateFinancialReport(startDate, endDate);
+    const data = await db.ledger.getAll({ startDate, endDate });
     setEntries(data);
     setLoading(false);
   }, [db, startDate, endDate]);

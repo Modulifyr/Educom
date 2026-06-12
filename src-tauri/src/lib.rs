@@ -1,11 +1,34 @@
+use argon2::{Argon2, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use argon2::password_hash::{PasswordHash, rand_core::OsRng};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
 use tauri::State;
 use rusqlite::{Connection, params};
 use chrono::Utc;
 use uuid::Uuid;
 use once_cell::sync::Lazy;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::time::{Duration, Instant};
+use tracing::{info, warn, error};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use sentry::{init, capture_message, ClientOptions};
+
+const SQLITE_CONSTRAINT_UNIQUE_CODE: i32 = 1555;
+
+fn sqlite_error_to_string(err: rusqlite::Error, default_msg: &str) -> String {
+    match err {
+        rusqlite::Error::SqliteFailure(code, _) => {
+            if code.extended_code == SQLITE_CONSTRAINT_UNIQUE_CODE {
+                default_msg.to_string()
+            } else {
+                err.to_string()
+            }
+        }
+        _ => err.to_string(),
+    }
+}
 
 // ── Shared password hashing salt (in production, store per-user salt in DB) ──
 // We use a simple SHA-256 based approach here with per-user salt stored in DB.
@@ -34,6 +57,8 @@ pub struct Student {
     pub id: String,
     #[serde(rename = "admissionNumber")]
     pub admission_number: String,
+    #[serde(rename = "rollNumber")]
+    pub roll_number: Option<String>,
     #[serde(rename = "firstName")]
     pub first_name: String,
     #[serde(rename = "lastName")]
@@ -41,6 +66,9 @@ pub struct Student {
     #[serde(rename = "dateOfBirth")]
     pub date_of_birth: String,
     pub gender: String,
+    pub grade: Option<String>,
+    pub semester: Option<String>,
+    pub stream: Option<String>,
     #[serde(rename = "classId")]
     pub class_id: String,
     pub section: Option<String>,
@@ -59,6 +87,8 @@ pub struct Student {
 pub struct StudentInput {
     #[serde(rename = "admissionNumber")]
     pub admission_number: String,
+    #[serde(rename = "rollNumber")]
+    pub roll_number: Option<String>,
     #[serde(rename = "firstName")]
     pub first_name: String,
     #[serde(rename = "lastName")]
@@ -66,6 +96,9 @@ pub struct StudentInput {
     #[serde(rename = "dateOfBirth")]
     pub date_of_birth: String,
     pub gender: String,
+    pub grade: Option<String>,
+    pub semester: Option<String>,
+    pub stream: Option<String>,
     #[serde(rename = "classId")]
     pub class_id: String,
     pub section: Option<String>,
@@ -365,48 +398,252 @@ pub struct SyncStatus {
     pub pending_changes: i32,
     #[serde(rename = "syncState")]
     pub sync_state: String,
+    #[serde(rename = "errorMessage")]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncQueueEntry {
+    pub id: String,
+    pub operation: String,
+    pub table_name: String,
+    pub record_id: String,
+    pub data: String,
+    pub user_role: String,
+    pub timestamp: String,
+    pub synced: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConflictResolutionResult {
+    pub resolution: String,       // 'local' | 'remote' | 'merged'
+    pub winning_data: Option<String>,
+    pub conflict_type: String,     // 'none' | 'update_update' | 'update_delete' | 'delete_delete'
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Invite {
+    pub id: String,
+    #[serde(rename = "inviteCode")]
+    pub invite_code: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub role: String,
+    pub username: String,
+    pub password_hash: String,
+    pub status: String,
+    #[serde(rename = "createdBy")]
+    pub created_by: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    #[serde(rename = "usedBy")]
+    pub used_by: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InviteCreateInput {
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub role: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InviteAcceptInput {
+    #[serde(rename = "inviteCode")]
+    pub invite_code: String,
+    #[serde(rename = "serverUrl")]
+    pub server_url: Option<String>,
+}
+
+// Role hierarchy for conflict resolution (higher index = higher authority)
+const ROLE_HIERARCHY: [&str; 4] = ["teacher", "finance", "management", "admin"];
+
+fn role_to_authority(role: &str) -> i32 {
+    ROLE_HIERARCHY.iter().position(|&r| r == role).map(|p| p as i32).unwrap_or(-1)
+}
+
+fn resolve_conflict(
+    local_authority: i32,
+    remote_authority: i32,
+    local_timestamp: &str,
+    remote_timestamp: &str,
+) -> ConflictResolutionResult {
+    if local_authority > remote_authority {
+        ConflictResolutionResult {
+            resolution: "local".to_string(),
+            winning_data: None,
+            conflict_type: "update_update".to_string(),
+        }
+    } else if remote_authority > local_authority {
+        ConflictResolutionResult {
+            resolution: "remote".to_string(),
+            winning_data: None,
+            conflict_type: "update_update".to_string(),
+        }
+    } else {
+        if local_timestamp >= remote_timestamp {
+            ConflictResolutionResult {
+                resolution: "local".to_string(),
+                winning_data: None,
+                conflict_type: "update_update".to_string(),
+            }
+        } else {
+            ConflictResolutionResult {
+                resolution: "remote".to_string(),
+                winning_data: None,
+                conflict_type: "update_update".to_string(),
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// App state
+// App state with rate limiting
 // ─────────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct LoginAttempt {
+    count: u32,
+    first_attempt: Instant,
+    locked_until: Option<Instant>,
+}
+
+impl Clone for LoginAttempt {
+    fn clone(&self) -> Self {
+        LoginAttempt {
+            count: self.count,
+            first_attempt: self.first_attempt,
+            locked_until: self.locked_until,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DbState {
+    db: Arc<Mutex<Connection>>,
+    login_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
+}
 
 pub struct AppState {
-    pub db: Mutex<Connection>,
+    pub db: Arc<Mutex<Connection>>,
     pub server_mode: RwLock<String>,
+    pub server_url: RwLock<Option<String>>,
+    pub http_server_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) login_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
+    pub db_stats: DbStats,
 }
+
+#[derive(Default)]
+pub struct DbStats {
+    pub acquire_count: AtomicU64,
+    pub contention_count: AtomicU64,
+    pub total_wait_ms: AtomicU64,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            db: Arc::new(Mutex::new(Connection::open(":memory:").unwrap())),
+            server_mode: RwLock::new("standalone".to_string()),
+            server_url: RwLock::new(None),
+            http_server_handle: Mutex::new(None),
+            login_attempts: Arc::new(Mutex::new(HashMap::new())),
+            db_stats: DbStats::default(),
+        }
+    }
+}
+
+const MAX_LOGIN_ATTEMPTS: u32 = 5;
+const LOCKOUT_DURATION: Duration = Duration::from_secs(300); // 5 minutes
+const ATTEMPT_WINDOW: Duration = Duration::from_secs(900); // 15 minutes
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Password helpers
-// Using a simple PBKDF2-style approach with std only.
-// Replace with argon2 crate for stronger security before go-live.
+// Uses argon2 for secure password hashing.
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn hash_password(password: &str, salt: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    // NOTE: This is NOT cryptographically secure.
-    // Replace with argon2 or bcrypt before shipping to real clients.
-    // We use this here only to get the architecture wired correctly.
-    let combined = format!("{}{}", salt, password);
-    let mut hasher = DefaultHasher::new();
-    combined.hash(&mut hasher);
-    // Run multiple rounds to slow down brute force slightly
-    let mut result = hasher.finish();
-    for _ in 0..10000 {
-        let mut h = DefaultHasher::new();
-        result.hash(&mut h);
-        result = h.finish();
+fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+    Ok(password_hash.to_string())
+}
+
+fn verify_password(password: &str, stored_hash: &str) -> Result<bool, argon2::password_hash::Error> {
+    let parsed_hash = PasswordHash::new(stored_hash)?;
+    let argon2 = Argon2::default();
+    match argon2.verify_password(password.as_bytes(), &parsed_hash) {
+        Ok(()) => Ok(true),
+        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(e) => Err(e),
     }
-    format!("{:x}", result)
 }
 
-fn verify_password(password: &str, salt: &str, stored_hash: &str) -> bool {
-    hash_password(password, salt) == stored_hash
+// ─────────────────────────────────────────────────────────────────────────────
+// Rate limiting helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn check_rate_limit(state: &DbState, username: &str) -> Result<(), String> {
+    let mut attempts = state.login_attempts.lock();
+    let now = Instant::now();
+
+    if let Some(attempt) = attempts.get(username) {
+        if let Some(locked_until) = attempt.locked_until {
+            if now < locked_until {
+                let remaining = locked_until.duration_since(now).as_secs();
+                return Err(format!("Account locked. Try again in {} seconds.", remaining));
+            }
+            // Lockout expired, reset
+            attempts.remove(username);
+            return Ok(());
+        }
+
+        // Check if within window
+        if now.duration_since(attempt.first_attempt) < ATTEMPT_WINDOW {
+            if attempt.count >= MAX_LOGIN_ATTEMPTS {
+                let mut locked = attempt.clone();
+                locked.locked_until = Some(now + LOCKOUT_DURATION);
+                attempts.insert(username.to_string(), locked);
+                return Err(format!("Too many attempts. Locked for {} seconds.", LOCKOUT_DURATION.as_secs()));
+            }
+        } else {
+            // Window expired, reset
+            attempts.remove(username);
+        }
+    }
+
+    Ok(())
 }
 
-fn generate_salt() -> String {
-    Uuid::new_v4().to_string().replace('-', "")
+fn record_failed_attempt(state: &DbState, username: &str) {
+    let mut attempts = state.login_attempts.lock();
+    let now = Instant::now();
+
+    if let Some(attempt) = attempts.get_mut(username) {
+        if now.duration_since(attempt.first_attempt) >= ATTEMPT_WINDOW {
+            *attempt = LoginAttempt {
+                count: 1,
+                first_attempt: now,
+                locked_until: None,
+            };
+        } else {
+            attempt.count += 1;
+        }
+    } else {
+        attempts.insert(username.to_string(), LoginAttempt {
+            count: 1,
+            first_attempt: now,
+            locked_until: None,
+        });
+    }
+}
+
+fn clear_login_attempts(state: &DbState, username: &str) {
+    let mut attempts = state.login_attempts.lock();
+    attempts.remove(username);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,7 +651,11 @@ fn generate_salt() -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
-    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;"
+    )?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS users (
@@ -424,7 +665,7 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
             full_name TEXT NOT NULL,
             email TEXT,
             password_hash TEXT NOT NULL,
-            password_salt TEXT NOT NULL,
+            password_salt TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             last_login TEXT
         )",
@@ -435,17 +676,22 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS students (
             id TEXT PRIMARY KEY,
             admission_number TEXT UNIQUE NOT NULL,
+            roll_number TEXT,
             first_name TEXT NOT NULL,
             last_name TEXT NOT NULL,
             date_of_birth TEXT NOT NULL,
             gender TEXT NOT NULL CHECK(gender IN ('male','female','other')),
+            grade TEXT,
+            semester TEXT,
+            stream TEXT CHECK(stream IN ('science','commerce','arts','none') OR stream IS NULL),
             class_id TEXT NOT NULL,
             section TEXT,
             parent_name TEXT NOT NULL,
             parent_phone TEXT NOT NULL,
             address TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT DEFAULT NULL
         )",
         [],
     )?;
@@ -463,7 +709,8 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
             email TEXT,
             salary REAL NOT NULL CHECK(salary >= 0),
             is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            deleted_at TEXT DEFAULT NULL
         )",
         [],
     )?;
@@ -471,8 +718,8 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS attendance (
             id TEXT PRIMARY KEY,
-            student_id TEXT,
-            staff_id TEXT,
+            student_id TEXT REFERENCES students(id) ON DELETE CASCADE,
+            staff_id TEXT REFERENCES staff(id) ON DELETE SET NULL,
             date TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('present','absent','late','excused')),
             remarks TEXT,
@@ -485,7 +732,7 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS salary (
             id TEXT PRIMARY KEY,
-            staff_id TEXT NOT NULL REFERENCES staff(id),
+            staff_id TEXT NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
             month TEXT NOT NULL,
             year INTEGER NOT NULL,
             base_salary REAL NOT NULL,
@@ -504,7 +751,7 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS fees (
             id TEXT PRIMARY KEY,
-            student_id TEXT NOT NULL REFERENCES students(id),
+            student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
             fee_type TEXT NOT NULL,
             amount REAL NOT NULL CHECK(amount > 0),
             due_date TEXT NOT NULL,
@@ -530,7 +777,8 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
             supplier TEXT,
             reorder_level INTEGER,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT DEFAULT NULL
         )",
         [],
     )?;
@@ -542,9 +790,10 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
             name TEXT NOT NULL,
             description TEXT,
             credits INTEGER NOT NULL DEFAULT 0,
-            teacher_id TEXT,
+            teacher_id TEXT REFERENCES staff(id) ON DELETE SET NULL,
             class_id TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            deleted_at TEXT DEFAULT NULL
         )",
         [],
     )?;
@@ -552,8 +801,8 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS exams (
             id TEXT PRIMARY KEY,
-            student_id TEXT NOT NULL REFERENCES students(id),
-            course_id TEXT NOT NULL REFERENCES courses(id),
+            student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+            course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
             exam_type TEXT NOT NULL CHECK(exam_type IN ('quiz','midterm','final','assignment')),
             marks REAL NOT NULL CHECK(marks >= 0),
             max_marks REAL NOT NULL CHECK(max_marks > 0),
@@ -604,14 +853,88 @@ fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
             table_name TEXT NOT NULL,
             record_id TEXT NOT NULL,
             data TEXT NOT NULL,
-            timestamp TEXT NOT NULL
+            user_role TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            synced INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS invites (
+            id TEXT PRIMARY KEY,
+            invite_code TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin','management','finance','teacher')),
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','expired')),
+            used_by TEXT
+        )",
+        [],
+    )?;
+
+    // ── Database migrations for existing tables ─────────────────────────────────
+    // Add missing columns to existing tables (soft delete, academic fields)
+    let migrator = vec![
+        ("students", vec![
+            "ALTER TABLE students ADD COLUMN roll_number TEXT",
+            "ALTER TABLE students ADD COLUMN grade TEXT",
+            "ALTER TABLE students ADD COLUMN semester TEXT",
+            "ALTER TABLE students ADD COLUMN stream TEXT",
+            "ALTER TABLE students ADD COLUMN deleted_at TEXT DEFAULT NULL",
+        ]),
+        ("staff", vec![
+            "ALTER TABLE staff ADD COLUMN deleted_at TEXT DEFAULT NULL",
+        ]),
+        ("inventory", vec![
+            "ALTER TABLE inventory ADD COLUMN deleted_at TEXT DEFAULT NULL",
+        ]),
+        ("courses", vec![
+            "ALTER TABLE courses ADD COLUMN deleted_at TEXT DEFAULT NULL",
+        ]),
+    ];
+
+    for (_table, alterations) in migrator {
+        for alter in alterations {
+            conn.execute(alter, []).ok(); // Ignore errors if column already exists
+        }
+    }
+
+    // ── Indexes for performance ──────────────────────────────────────────────
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_students_deleted ON students(deleted_at)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_department ON staff(department)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_is_active ON staff(is_active)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_deleted ON staff(deleted_at)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance(staff_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_salary_staff ON salary(staff_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_salary_month_year ON salary(month, year)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fees_student ON fees(student_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fees_status ON fees(status)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fees_academic_year ON fees(academic_year)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory(category)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_inventory_deleted ON inventory(deleted_at)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_teacher ON courses(teacher_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_class ON courses(class_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_deleted ON courses(deleted_at)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_exams_student ON exams(student_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_exams_course ON exams(course_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger(date)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account_code)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_queue_synced ON sync_queue(synced)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_invites_code ON invites(invite_code)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_invites_status ON invites(status)", [])?;
+
     Ok(())
 }
 
+#[cfg(debug_assertions)]
 fn seed_demo_data(conn: &Connection) -> Result<(), rusqlite::Error> {
     let count: i32 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
     if count > 0 {
@@ -621,22 +944,24 @@ fn seed_demo_data(conn: &Connection) -> Result<(), rusqlite::Error> {
     let now = Utc::now().to_rfc3339();
 
     let demo_users = vec![
-        ("1", "admin",   "admin",      "System Administrator", "admin@educom.local",   "admin123"),
-        ("2", "manager", "management", "School Manager",        "manager@educom.local", "manager123"),
-        ("3", "finance", "finance",    "Finance Officer",       "finance@educom.local", "finance123"),
-        ("4", "teacher", "teacher",    "John Teacher",          "teacher@educom.local", "teacher123"),
+        ("1", "admin", "admin", "System Administrator", "admin@educom.local", "admin123"),
     ];
 
     for (id, username, role, full_name, email, password) in demo_users {
-        let salt = generate_salt();
-        let hash = hash_password(password, &salt);
+        let hash = hash_password(password).expect("Failed to hash demo password");
         conn.execute(
             "INSERT INTO users (id, username, role, full_name, email, password_hash, password_salt, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, username, role, full_name, email, hash, salt, &now],
+            params![id, username, role, full_name, email, hash, "", &now],
         )?;
     }
 
+    info!("Demo data seeded (debug only)");
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn seed_demo_data(_conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
@@ -652,9 +977,9 @@ fn audit(
     record_id: &str,
     old_value: Option<&str>,
     new_value: Option<&str>,
-) {
+) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    let _ = conn.execute(
+    conn.execute(
         "INSERT INTO audit_log (id, user_id, action, table_name, record_id, old_value, new_value, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
@@ -662,7 +987,8 @@ fn audit(
             user_id, action, table_name, record_id,
             old_value, new_value, now
         ],
-    );
+    ).map_err(|e| format!("Audit log failed: {}", e))?;
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -670,57 +996,93 @@ fn audit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn authenticate_user(
-    state: State<AppState>,
+async fn authenticate_user(
+    state: State<'_, AppState>,
     username: String,
     password: String,
 ) -> Result<Option<User>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let result = {
+        let _span = tracing::info_span!("authenticate_user", username = %username).entered();
 
-    let result = conn.query_row(
-        "SELECT id, username, role, full_name, email, password_hash, password_salt, created_at, last_login
-         FROM users WHERE username = ?1",
-        params![&username],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,  // id
-                row.get::<_, String>(1)?,  // username
-                row.get::<_, String>(2)?,  // role
-                row.get::<_, String>(3)?,  // full_name
-                row.get::<_, Option<String>>(4)?,  // email
-                row.get::<_, String>(5)?,  // password_hash
-                row.get::<_, String>(6)?,  // password_salt
-                row.get::<_, String>(7)?,  // created_at
-                row.get::<_, Option<String>>(8)?,  // last_login
-            ))
-        },
-    );
+        let db_state = DbState {
+            db: state.db.clone(),
+            login_attempts: state.login_attempts.clone(),
+        };
 
-    match result {
-        Ok((id, uname, role, full_name, email, hash, salt, created_at, _last_login)) => {
-            if !verify_password(&password, &salt, &hash) {
-                return Ok(None);
-            }
-            // Update last_login
-            let now = Utc::now().to_rfc3339();
-            let _ = conn.execute(
-                "UPDATE users SET last_login = ?1 WHERE id = ?2",
-                params![&now, &id],
-            );
-            audit(&conn, &id, "LOGIN", "users", &id, None, None);
-            Ok(Some(User {
-                id,
-                username: uname,
-                role,
-                full_name,
-                email,
-                created_at,
-                last_login: Some(now),
-            }))
+        if let Err(e) = check_rate_limit(&db_state, &username) {
+            warn!("Login rate limit exceeded for user: {}", username);
+            return Err(e);
         }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+
+        let (username, password) = (username.clone(), password.clone());
+
+        drop(_span);
+
+        tokio::task::spawn_blocking(move || {
+            let conn = db_state.db.lock();
+            let result = conn.query_row(
+                "SELECT id, username, role, full_name, email, password_hash, created_at, last_login
+                 FROM users WHERE username = ?1",
+                params![&username],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            );
+
+            match result {
+                Ok((id, uname, role, full_name, email, hash, created_at, _last_login)) => {
+                    drop(conn);
+                    let is_valid = verify_password(&password, &hash).map_err(|e| e.to_string())?;
+                    if !is_valid {
+                        warn!("Failed login attempt for user: {}", username);
+                        record_failed_attempt(&db_state, &username);
+                        clear_login_attempts(&db_state, &username);
+                        return Ok(None);
+                    }
+                    let conn = db_state.db.lock();
+                    let now = Utc::now().to_rfc3339();
+                    let _ = conn.execute(
+                        "UPDATE users SET last_login = ?1 WHERE id = ?2",
+                        params![&now, &id],
+                    );
+                    clear_login_attempts(&db_state, &username);
+                    let audit_result = audit(&conn, &id, "LOGIN", "users", &id, None, None);
+                    if audit_result.is_err() {
+                        error!("Audit logging failed for user login: {:?}", audit_result.err());
+                    }
+                    info!("User {} logged in successfully", username);
+                    Ok(Some(User {
+                        id,
+                        username: uname,
+                        role,
+                        full_name,
+                        email,
+                        created_at,
+                        last_login: Some(now),
+                    }))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    warn!("Login attempt for non-existent user: {}", username);
+                    record_failed_attempt(&db_state, &username);
+                    Ok(None)
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -729,7 +1091,7 @@ fn authenticate_user(
 
 #[tauri::command]
 fn get_users(state: State<AppState>) -> Result<Vec<User>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let mut stmt = conn.prepare(
         "SELECT id, username, role, full_name, email, created_at, last_login FROM users ORDER BY created_at"
     ).map_err(|e| e.to_string())?;
@@ -753,7 +1115,7 @@ fn get_users(state: State<AppState>) -> Result<Vec<User>, String> {
 
 #[tauri::command]
 fn create_user(state: State<AppState>, data: UserCreateInput) -> Result<User, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
 
     // Validate role
     let valid_roles = ["admin", "management", "finance", "teacher"];
@@ -769,20 +1131,13 @@ fn create_user(state: State<AppState>, data: UserCreateInput) -> Result<User, St
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let salt = generate_salt();
-    let hash = hash_password(&data.password, &salt);
+    let hash = hash_password(&data.password).map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO users (id, username, role, full_name, email, password_hash, password_salt, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![&id, &data.username, &data.role, &data.full_name, &data.email, &hash, &salt, &now],
-    ).map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            "Username already exists".to_string()
-        } else {
-            e.to_string()
-        }
-    })?;
+        params![&id, &data.username, &data.role, &data.full_name, &data.email, &hash, "", &now],
+    ).map_err(|e| sqlite_error_to_string(e, "Username already exists"))?;
 
     Ok(User {
         id,
@@ -804,7 +1159,7 @@ fn update_user(
     role: Option<String>,
     password: Option<String>,
 ) -> Result<User, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
 
     if let Some(ref r) = role {
         let valid_roles = ["admin", "management", "finance", "teacher"];
@@ -829,11 +1184,10 @@ fn update_user(
         if pwd.len() < 8 {
             return Err("Password must be at least 8 characters".to_string());
         }
-        let salt = generate_salt();
-        let hash = hash_password(pwd, &salt);
+        let hash = hash_password(pwd).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE users SET password_hash = ?1, password_salt = ?2 WHERE id = ?3",
-            params![hash, salt, &id],
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![hash, &id],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -856,7 +1210,7 @@ fn update_user(
 
 #[tauri::command]
 fn delete_user(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     conn.execute("DELETE FROM users WHERE id = ?1", params![&id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -870,35 +1224,56 @@ fn row_to_student(row: &rusqlite::Row) -> rusqlite::Result<Student> {
     Ok(Student {
         id: row.get(0)?,
         admission_number: row.get(1)?,
-        first_name: row.get(2)?,
-        last_name: row.get(3)?,
-        date_of_birth: row.get(4)?,
-        gender: row.get(5)?,
-        class_id: row.get(6)?,
-        section: row.get(7)?,
-        parent_name: row.get(8)?,
-        parent_phone: row.get(9)?,
-        address: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        roll_number: row.get(2)?,
+        first_name: row.get(3)?,
+        last_name: row.get(4)?,
+        date_of_birth: row.get(5)?,
+        gender: row.get(6)?,
+        grade: row.get(7)?,
+        semester: row.get(8)?,
+        stream: row.get(9)?,
+        class_id: row.get(10)?,
+        section: row.get(11)?,
+        parent_name: row.get(12)?,
+        parent_phone: row.get(13)?,
+        address: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 
 #[tauri::command]
-fn get_students(state: State<AppState>, class_id: Option<String>) -> Result<Vec<Student>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+fn get_students(
+    state: State<AppState>,
+    class_id: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+) -> Result<Vec<Student>, String> {
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let sql = if class_id.is_some() {
-        "SELECT id, admission_number, first_name, last_name, date_of_birth, gender, class_id,
-                section, parent_name, parent_phone, address, created_at, updated_at
-         FROM students WHERE class_id = ?1 ORDER BY last_name, first_name"
+        format!(
+            "SELECT id, admission_number, roll_number, first_name, last_name, date_of_birth, gender,
+                    grade, semester, stream, class_id, section, parent_name, parent_phone,
+                    address, created_at, updated_at
+             FROM students WHERE class_id = ?1 AND deleted_at IS NULL
+             ORDER BY last_name, first_name LIMIT {} OFFSET {}",
+            lim, off
+        )
     } else {
-        "SELECT id, admission_number, first_name, last_name, date_of_birth, gender, class_id,
-                section, parent_name, parent_phone, address, created_at, updated_at
-         FROM students ORDER BY last_name, first_name"
+        format!(
+            "SELECT id, admission_number, roll_number, first_name, last_name, date_of_birth, gender,
+                    grade, semester, stream, class_id, section, parent_name, parent_phone,
+                    address, created_at, updated_at
+             FROM students WHERE deleted_at IS NULL
+             ORDER BY last_name, first_name LIMIT {} OFFSET {}",
+            lim, off
+        )
     };
 
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let students = if let Some(cid) = class_id {
         stmt.query_map(params![cid], row_to_student)
@@ -921,35 +1296,35 @@ fn create_student(state: State<AppState>, data: StudentInput) -> Result<Student,
         return Err("Admission number is required".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
     conn.execute(
-        "INSERT INTO students (id, admission_number, first_name, last_name, date_of_birth,
-                               gender, class_id, section, parent_name, parent_phone, address,
-                               created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        "INSERT INTO students (id, admission_number, roll_number, first_name, last_name, date_of_birth,
+                               gender, grade, semester, stream, class_id, section, parent_name,
+                               parent_phone, address, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![
-            &id, &data.admission_number, &data.first_name, &data.last_name,
-            &data.date_of_birth, &data.gender, &data.class_id, &data.section,
-            &data.parent_name, &data.parent_phone, &data.address, &now, &now
+            &id, &data.admission_number, &data.roll_number, &data.first_name, &data.last_name,
+            &data.date_of_birth, &data.gender, &data.grade, &data.semester, &data.stream,
+            &data.class_id, &data.section, &data.parent_name, &data.parent_phone, &data.address,
+            &now, &now
         ],
-    ).map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            "Admission number already exists".to_string()
-        } else {
-            e.to_string()
-        }
-    })?;
+    )
+    .map_err(|e| sqlite_error_to_string(e, "Admission number already exists"))?;
 
     Ok(Student {
         id,
         admission_number: data.admission_number,
+        roll_number: data.roll_number,
         first_name: data.first_name,
         last_name: data.last_name,
         date_of_birth: data.date_of_birth,
         gender: data.gender,
+        grade: data.grade,
+        semester: data.semester,
+        stream: data.stream,
         class_id: data.class_id,
         section: data.section,
         parent_name: data.parent_name,
@@ -962,18 +1337,20 @@ fn create_student(state: State<AppState>, data: StudentInput) -> Result<Student,
 
 #[tauri::command]
 fn update_student(state: State<AppState>, id: String, data: StudentInput) -> Result<Student, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let now = Utc::now().to_rfc3339();
 
     let rows = conn.execute(
-        "UPDATE students SET admission_number=?1, first_name=?2, last_name=?3,
-                             date_of_birth=?4, gender=?5, class_id=?6, section=?7,
-                             parent_name=?8, parent_phone=?9, address=?10, updated_at=?11
-         WHERE id = ?12",
+        "UPDATE students SET admission_number=?1, roll_number=?2, first_name=?3, last_name=?4,
+                             date_of_birth=?5, gender=?6, grade=?7, semester=?8, stream=?9,
+                             class_id=?10, section=?11, parent_name=?12, parent_phone=?13,
+                             address=?14, updated_at=?15
+         WHERE id = ?16",
         params![
-            &data.admission_number, &data.first_name, &data.last_name,
-            &data.date_of_birth, &data.gender, &data.class_id, &data.section,
-            &data.parent_name, &data.parent_phone, &data.address, &now, &id
+            &data.admission_number, &data.roll_number, &data.first_name, &data.last_name,
+            &data.date_of_birth, &data.gender, &data.grade, &data.semester, &data.stream,
+            &data.class_id, &data.section, &data.parent_name, &data.parent_phone, &data.address,
+            &now, &id
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -984,45 +1361,58 @@ fn update_student(state: State<AppState>, id: String, data: StudentInput) -> Res
     Ok(Student {
         id,
         admission_number: data.admission_number,
+        roll_number: data.roll_number,
         first_name: data.first_name,
         last_name: data.last_name,
         date_of_birth: data.date_of_birth,
         gender: data.gender,
+        grade: data.grade,
+        semester: data.semester,
+        stream: data.stream,
         class_id: data.class_id,
         section: data.section,
         parent_name: data.parent_name,
         parent_phone: data.parent_phone,
         address: data.address,
-        created_at: String::new(), // caller ignores this field on update
+        created_at: String::new(),
         updated_at: now,
     })
 }
 
 #[tauri::command]
 fn delete_student(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM students WHERE id = ?1", params![&id])
-        .map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let now = Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "UPDATE students SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![&now, &id],
+    ).map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err("Student not found or already deleted".to_string());
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn bulk_import_students(state: State<AppState>, records: Vec<StudentInput>) -> Result<i32, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut count = 0i32;
 
     for data in &records {
         let id = Uuid::new_v4().to_string();
-        let result = conn.execute(
-            "INSERT OR IGNORE INTO students (id, admission_number, first_name, last_name,
-                                             date_of_birth, gender, class_id, section,
-                                             parent_name, parent_phone, address, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        let result = tx.execute(
+            "INSERT OR IGNORE INTO students (id, admission_number, roll_number, first_name, last_name,
+                                             date_of_birth, gender, grade, semester, stream,
+                                             class_id, section, parent_name, parent_phone, address,
+                                             created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
-                &id, &data.admission_number, &data.first_name, &data.last_name,
-                &data.date_of_birth, &data.gender, &data.class_id, &data.section,
-                &data.parent_name, &data.parent_phone, &data.address, &now, &now
+                &id, &data.admission_number, &data.roll_number, &data.first_name, &data.last_name,
+                &data.date_of_birth, &data.gender, &data.grade, &data.semester, &data.stream,
+                &data.class_id, &data.section, &data.parent_name, &data.parent_phone, &data.address,
+                &now, &now
             ],
         );
         if let Ok(1) = result {
@@ -1030,6 +1420,7 @@ fn bulk_import_students(state: State<AppState>, records: Vec<StudentInput>) -> R
         }
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(count)
 }
 
@@ -1055,24 +1446,28 @@ fn row_to_staff(row: &rusqlite::Row) -> rusqlite::Result<Staff> {
 }
 
 #[tauri::command]
-fn get_staff(state: State<AppState>, department: Option<String>, is_active: Option<bool>) -> Result<Vec<Staff>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+fn get_staff(
+    state: State<AppState>,
+    department: Option<String>,
+    is_active: Option<bool>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+) -> Result<Vec<Staff>, String> {
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
-    let mut conditions = vec![];
-    if department.is_some() { conditions.push("department = ?"); }
-    if is_active.is_some() { conditions.push("is_active = ?"); }
+    let mut conditions = vec!["deleted_at IS NULL".to_string()];
+    if department.is_some() { conditions.push("department = ?".to_string()); }
+    if is_active.is_some() { conditions.push("is_active = ?".to_string()); }
 
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
     let sql = format!(
         "SELECT id, employee_id, first_name, last_name, designation, department,
                 date_of_joining, phone, email, salary, is_active, created_at
-         FROM staff {} ORDER BY last_name, first_name",
-        where_clause
+         FROM staff {} ORDER BY last_name, first_name LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1105,7 +1500,7 @@ fn create_staff(state: State<AppState>, data: StaffInput) -> Result<Staff, Strin
         return Err("Salary cannot be negative".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let is_active_int = if data.is_active { 1 } else { 0 };
@@ -1119,13 +1514,7 @@ fn create_staff(state: State<AppState>, data: StaffInput) -> Result<Staff, Strin
             &data.designation, &data.department, &data.date_of_joining,
             &data.phone, &data.email, &data.salary, &is_active_int, &now
         ],
-    ).map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            "Employee ID already exists".to_string()
-        } else {
-            e.to_string()
-        }
-    })?;
+    ).map_err(|e| sqlite_error_to_string(e, "Employee ID already exists"))?;
 
     Ok(Staff { id, employee_id: data.employee_id, first_name: data.first_name,
                last_name: data.last_name, designation: data.designation,
@@ -1136,7 +1525,7 @@ fn create_staff(state: State<AppState>, data: StaffInput) -> Result<Staff, Strin
 
 #[tauri::command]
 fn update_staff(state: State<AppState>, id: String, data: StaffInput) -> Result<Staff, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let is_active_int = if data.is_active { 1 } else { 0 };
 
     let rows = conn.execute(
@@ -1165,9 +1554,15 @@ fn update_staff(state: State<AppState>, id: String, data: StaffInput) -> Result<
 
 #[tauri::command]
 fn delete_staff(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM staff WHERE id = ?1", params![&id])
-        .map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let now = Utc::now().to_rfc3339();
+    let rows = conn.execute(
+        "UPDATE staff SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![&now, &id],
+    ).map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err("Staff member not found or already deleted".to_string());
+    }
     Ok(())
 }
 
@@ -1194,8 +1589,12 @@ fn get_attendance(
     date: Option<String>,
     student_id: Option<String>,
     staff_id: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<AttendanceRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let mut conditions = vec![];
     if date.is_some() { conditions.push("date = ?"); }
@@ -1210,8 +1609,8 @@ fn get_attendance(
 
     let sql = format!(
         "SELECT id, student_id, staff_id, date, status, remarks, recorded_by, created_at
-         FROM attendance {} ORDER BY date DESC",
-        where_clause
+         FROM attendance {} ORDER BY date DESC LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1241,7 +1640,7 @@ fn get_attendance_by_range(
     start_date: String,
     end_date: String,
 ) -> Result<Vec<AttendanceRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let mut stmt = conn.prepare(
         "SELECT id, student_id, staff_id, date, status, remarks, recorded_by, created_at
          FROM attendance WHERE date >= ?1 AND date <= ?2 ORDER BY date"
@@ -1257,7 +1656,7 @@ fn get_attendance_by_range(
 
 #[tauri::command]
 fn create_attendance(state: State<AppState>, data: AttendanceInput) -> Result<AttendanceRecord, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -1284,13 +1683,14 @@ fn create_attendance(state: State<AppState>, data: AttendanceInput) -> Result<At
 
 #[tauri::command]
 fn bulk_create_attendance(state: State<AppState>, records: Vec<AttendanceInput>) -> Result<i32, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut count = 0i32;
 
     for data in &records {
         let id = Uuid::new_v4().to_string();
-        if conn.execute(
+        if tx.execute(
             "INSERT INTO attendance (id, student_id, staff_id, date, status, remarks, recorded_by, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
@@ -1302,6 +1702,7 @@ fn bulk_create_attendance(state: State<AppState>, records: Vec<AttendanceInput>)
         }
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(count)
 }
 
@@ -1333,7 +1734,7 @@ fn get_salary(
     month: Option<String>,
     status: Option<String>,
 ) -> Result<Vec<SalaryRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
 
     let mut conditions = vec![];
     if staff_id.is_some() { conditions.push("staff_id = ?"); }
@@ -1380,7 +1781,7 @@ fn update_salary(
     status: String,
     payment_date: Option<String>,
 ) -> Result<SalaryRecord, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
 
     conn.execute(
         "UPDATE salary SET status = ?1, payment_date = ?2 WHERE id = ?3",
@@ -1406,27 +1807,27 @@ fn process_bulk_salary(
     year: i32,
     processed_by: String,
 ) -> Result<Vec<SalaryRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     let mut new_records = vec![];
 
     for staff_id in &staff_ids {
-        // Get staff salary
-        let salary_result = conn.query_row(
-            "SELECT salary FROM staff WHERE id = ?1",
+        let salary_result = tx.query_row(
+            "SELECT salary FROM staff WHERE id = ?1 AND deleted_at IS NULL",
             params![staff_id],
             |row| row.get::<_, f64>(0),
         );
 
         let base_salary = match salary_result {
             Ok(s) => s,
-            Err(_) => continue, // skip if staff not found
+            Err(_) => continue,
         };
 
         let id = Uuid::new_v4().to_string();
-        let net = base_salary; // allowances/deductions default to 0
+        let net = base_salary;
 
-        let result = conn.execute(
+        let result = tx.execute(
             "INSERT OR IGNORE INTO salary
              (id, staff_id, month, year, base_salary, allowances, deductions,
               net_salary, status, processed_by, created_at)
@@ -1452,6 +1853,7 @@ fn process_bulk_salary(
         }
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(new_records)
 }
 
@@ -1481,8 +1883,12 @@ fn get_fees(
     student_id: Option<String>,
     status: Option<String>,
     academic_year: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<FeeRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let mut conditions = vec![];
     if student_id.is_some() { conditions.push("student_id = ?"); }
@@ -1498,8 +1904,8 @@ fn get_fees(
     let sql = format!(
         "SELECT id, student_id, fee_type, amount, due_date, paid_amount, payment_date,
                 status, academic_year, remarks, created_at
-         FROM fees {} ORDER BY due_date",
-        where_clause
+         FROM fees {} ORDER BY due_date LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1528,7 +1934,7 @@ fn create_fee(state: State<AppState>, data: FeeInput) -> Result<FeeRecord, Strin
         return Err("Fee amount must be greater than zero".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -1567,7 +1973,7 @@ fn record_fee_payment(
         return Err("Payment amount must be greater than zero".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let now = Utc::now().to_rfc3339();
 
     // Get current record
@@ -1629,20 +2035,33 @@ fn row_to_inventory(row: &rusqlite::Row) -> rusqlite::Result<InventoryItem> {
 }
 
 #[tauri::command]
-fn get_inventory(state: State<AppState>, category: Option<String>) -> Result<Vec<InventoryItem>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+fn get_inventory(
+    state: State<AppState>,
+    category: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+) -> Result<Vec<InventoryItem>, String> {
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let (sql, use_param) = if category.is_some() {
-        ("SELECT id, item_code, name, category, quantity, unit, unit_price, supplier,
-                 reorder_level, created_at, updated_at
-          FROM inventory WHERE category = ?1 ORDER BY name", true)
+        (format!(
+            "SELECT id, item_code, name, category, quantity, unit, unit_price, supplier,
+                    reorder_level, created_at, updated_at
+             FROM inventory WHERE category = ?1 AND deleted_at IS NULL ORDER BY name LIMIT {} OFFSET {}",
+            lim, off
+        ), true)
     } else {
-        ("SELECT id, item_code, name, category, quantity, unit, unit_price, supplier,
-                 reorder_level, created_at, updated_at
-          FROM inventory ORDER BY name", false)
+        (format!(
+            "SELECT id, item_code, name, category, quantity, unit, unit_price, supplier,
+                    reorder_level, created_at, updated_at
+             FROM inventory WHERE deleted_at IS NULL ORDER BY name LIMIT {} OFFSET {}",
+            lim, off
+        ), false)
     };
 
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let items = if use_param {
         stmt.query_map(params![category.unwrap()], row_to_inventory)
@@ -1658,7 +2077,7 @@ fn get_inventory(state: State<AppState>, category: Option<String>) -> Result<Vec
 
 #[tauri::command]
 fn get_low_stock(state: State<AppState>) -> Result<Vec<InventoryItem>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let mut stmt = conn.prepare(
         "SELECT id, item_code, name, category, quantity, unit, unit_price, supplier,
                 reorder_level, created_at, updated_at
@@ -1684,7 +2103,7 @@ fn create_inventory_item(state: State<AppState>, data: InventoryInput) -> Result
         return Err("Unit price cannot be negative".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -1696,13 +2115,8 @@ fn create_inventory_item(state: State<AppState>, data: InventoryInput) -> Result
             &id, &data.item_code, &data.name, &data.category, &data.quantity,
             &data.unit, &data.unit_price, &data.supplier, &data.reorder_level, &now, &now
         ],
-    ).map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            "Item code already exists".to_string()
-        } else {
-            e.to_string()
-        }
-    })?;
+    )
+    .map_err(|e| sqlite_error_to_string(e, "Item code already exists"))?;
 
     Ok(InventoryItem {
         id, item_code: data.item_code, name: data.name, category: data.category,
@@ -1714,7 +2128,7 @@ fn create_inventory_item(state: State<AppState>, data: InventoryInput) -> Result
 
 #[tauri::command]
 fn update_inventory_item(state: State<AppState>, id: String, data: InventoryInput) -> Result<InventoryItem, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let now = Utc::now().to_rfc3339();
 
     let rows = conn.execute(
@@ -1741,7 +2155,7 @@ fn update_inventory_item(state: State<AppState>, id: String, data: InventoryInpu
 
 #[tauri::command]
 fn delete_inventory_item(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     conn.execute("DELETE FROM inventory WHERE id = ?1", params![&id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1769,23 +2183,23 @@ fn get_courses(
     state: State<AppState>,
     class_id: Option<String>,
     teacher_id: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<Course>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
-    let mut conditions = vec![];
-    if class_id.is_some() { conditions.push("class_id = ?"); }
-    if teacher_id.is_some() { conditions.push("teacher_id = ?"); }
+    let mut conditions = vec!["deleted_at IS NULL".to_string()];
+    if class_id.is_some() { conditions.push("class_id = ?".to_string()); }
+    if teacher_id.is_some() { conditions.push("teacher_id = ?".to_string()); }
 
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
     let sql = format!(
         "SELECT id, code, name, description, credits, teacher_id, class_id, created_at
-         FROM courses {} ORDER BY name",
-        where_clause
+         FROM courses {} ORDER BY name LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1813,7 +2227,7 @@ fn create_course(state: State<AppState>, data: CourseInput) -> Result<Course, St
         return Err("Course code and name are required".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -1821,13 +2235,7 @@ fn create_course(state: State<AppState>, data: CourseInput) -> Result<Course, St
         "INSERT INTO courses (id, code, name, description, credits, teacher_id, class_id, created_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![&id, &data.code, &data.name, &data.description, &data.credits, &data.teacher_id, &data.class_id, &now],
-    ).map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
-            "Course code already exists".to_string()
-        } else {
-            e.to_string()
-        }
-    })?;
+    ).map_err(|e| sqlite_error_to_string(e, "Course code already exists"))?;
 
     Ok(Course { id, code: data.code, name: data.name, description: data.description,
                credits: data.credits, teacher_id: data.teacher_id,
@@ -1836,7 +2244,7 @@ fn create_course(state: State<AppState>, data: CourseInput) -> Result<Course, St
 
 #[tauri::command]
 fn update_course(state: State<AppState>, id: String, data: CourseInput) -> Result<Course, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let now = Utc::now().to_rfc3339();
 
     let rows = conn.execute(
@@ -1856,7 +2264,7 @@ fn update_course(state: State<AppState>, id: String, data: CourseInput) -> Resul
 
 #[tauri::command]
 fn delete_course(state: State<AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     conn.execute("DELETE FROM courses WHERE id = ?1", params![&id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1886,8 +2294,12 @@ fn get_exams(
     state: State<AppState>,
     student_id: Option<String>,
     course_id: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<ExamRecord>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let mut conditions = vec![];
     if student_id.is_some() { conditions.push("student_id = ?"); }
@@ -1901,8 +2313,8 @@ fn get_exams(
 
     let sql = format!(
         "SELECT id, student_id, course_id, exam_type, marks, max_marks, graded_by, graded_at, remarks, created_at
-         FROM exams {} ORDER BY created_at DESC",
-        where_clause
+         FROM exams {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1933,7 +2345,7 @@ fn create_exam(state: State<AppState>, data: ExamInput) -> Result<ExamRecord, St
         return Err("Max marks must be greater than zero".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -1963,7 +2375,7 @@ fn update_exam(
     graded_by: String,
     remarks: Option<String>,
 ) -> Result<ExamRecord, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let now = Utc::now().to_rfc3339();
 
     let rows = conn.execute(
@@ -2012,8 +2424,12 @@ fn get_ledger(
     start_date: Option<String>,
     end_date: Option<String>,
     account_code: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<LedgerEntry>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
+    let lim = limit.unwrap_or(1000);
+    let off = offset.unwrap_or(0);
 
     let mut conditions = vec![];
     if start_date.is_some() { conditions.push("date >= ?"); }
@@ -2029,8 +2445,8 @@ fn get_ledger(
     let sql = format!(
         "SELECT id, date, account_code, account_name, description, debit, credit,
                 balance, voucher_type, voucher_number, created_by, created_at
-         FROM ledger {} ORDER BY date, created_at",
-        where_clause
+         FROM ledger {} ORDER BY date, created_at LIMIT {} OFFSET {}",
+        where_clause, lim, off
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -2062,7 +2478,7 @@ fn create_ledger_entry(state: State<AppState>, data: LedgerInput) -> Result<Ledg
         return Err("Description is required".to_string());
     }
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -2090,20 +2506,272 @@ fn create_ledger_entry(state: State<AppState>, data: LedgerInput) -> Result<Ledg
 // Tauri commands — Sync status
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn row_to_sync_entry(row: &rusqlite::Row) -> rusqlite::Result<SyncQueueEntry> {
+    Ok(SyncQueueEntry {
+        id: row.get(0)?,
+        operation: row.get(1)?,
+        table_name: row.get(2)?,
+        record_id: row.get(3)?,
+        data: row.get(4)?,
+        user_role: row.get(5)?,
+        timestamp: row.get(6)?,
+        synced: row.get::<_, i32>(7)? != 0,
+    })
+}
+
 #[tauri::command]
 fn get_sync_status(state: State<AppState>) -> Result<SyncStatus, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock();
     let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM sync_queue",
+        "SELECT COUNT(*) FROM sync_queue WHERE synced = 0",
         [],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
 
+    let last_sync: Option<String> = conn.query_row(
+        "SELECT MAX(timestamp) FROM sync_queue WHERE synced = 1",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string()).ok().flatten();
+
     Ok(SyncStatus {
-        last_sync_time: Utc::now().to_rfc3339(),
+        last_sync_time: last_sync.unwrap_or_default(),
         pending_changes: count,
         sync_state: "idle".to_string(),
+        error_message: None,
     })
+}
+
+#[tauri::command]
+fn queue_sync_operation(
+    state: State<AppState>,
+    operation: String,
+    table_name: String,
+    record_id: String,
+    data: String,
+    user_role: String,
+) -> Result<String, String> {
+    let conn = state.db.lock();
+    let id = Uuid::new_v4().to_string();
+    let timestamp = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO sync_queue (id, operation, table_name, record_id, data, user_role, timestamp, synced)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+        params![&id, &operation, &table_name, &record_id, &data, &user_role, &timestamp],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(id)
+}
+
+#[tauri::command]
+fn get_pending_sync_operations(state: State<AppState>) -> Result<Vec<SyncQueueEntry>, String> {
+    let conn = state.db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT id, operation, table_name, record_id, data, user_role, timestamp, synced
+         FROM sync_queue WHERE synced = 0 ORDER BY timestamp ASC"
+    ).map_err(|e| e.to_string())?;
+
+    let entries = stmt.query_map([], row_to_sync_entry)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(entries)
+}
+
+#[tauri::command]
+fn mark_operations_synced(state: State<AppState>, ids: Vec<String>) -> Result<(), String> {
+    let conn = state.db.lock();
+
+    for id in &ids {
+        conn.execute(
+            "UPDATE sync_queue SET synced = 1 WHERE id = ?1",
+            params![id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn resolve_and_apply_remote_change(
+    state: State<AppState>,
+    remote_operation: String,
+    remote_table: String,
+    remote_record_id: String,
+    remote_data: String,
+    remote_user_role: String,
+    remote_timestamp: String,
+) -> Result<ConflictResolutionResult, String> {
+    let conn = state.db.lock();
+
+    // Find local change for the same record
+    let local_entry: Option<SyncQueueEntry> = conn.query_row(
+        "SELECT id, operation, table_name, record_id, data, user_role, timestamp, synced
+         FROM sync_queue
+         WHERE table_name = ?1 AND record_id = ?2 AND synced = 0
+         ORDER BY timestamp DESC LIMIT 1",
+        params![&remote_table, &remote_record_id],
+        row_to_sync_entry,
+    ).ok();
+
+    // If no local change, remote wins
+    let local_entry = match local_entry {
+        Some(e) => e,
+        None => {
+            return Ok(ConflictResolutionResult {
+                resolution: "remote".to_string(),
+                winning_data: Some(remote_data),
+                conflict_type: "none".to_string(),
+            });
+        }
+    };
+
+    // Calculate authorities
+    let local_authority = role_to_authority(&local_entry.user_role);
+    let remote_authority = role_to_authority(&remote_user_role);
+
+    // Special cases by table
+    match remote_table.as_str() {
+        "attendance" => {
+            // Attendance is append-only, no conflicts - just merge
+            return Ok(ConflictResolutionResult {
+                resolution: "merged".to_string(),
+                winning_data: Some(remote_data),
+                conflict_type: "append_only".to_string(),
+            });
+        }
+        "ledger" => {
+            // Ledger entries are immutable - never overwrite, just insert
+            return Ok(ConflictResolutionResult {
+                resolution: "remote".to_string(),
+                winning_data: Some(remote_data),
+                conflict_type: "immutable".to_string(),
+            });
+        }
+        "fees" if remote_operation == "update" => {
+            // Fee payments are additive - keep higher paid_amount
+            let local_fee: serde_json::Value = serde_json::from_str(&local_entry.data)
+                .unwrap_or(serde_json::Value::Null);
+            let remote_fee: serde_json::Value = serde_json::from_str(&remote_data)
+                .unwrap_or(serde_json::Value::Null);
+
+            let local_paid = local_fee.get("paidAmount")
+                .and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let remote_paid = remote_fee.get("paidAmount")
+                .and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            return Ok(ConflictResolutionResult {
+                resolution: if remote_paid > local_paid { "remote" } else { "local" }.to_string(),
+                winning_data: Some(if remote_paid > local_paid { remote_data } else { local_entry.data }),
+                conflict_type: "additive".to_string(),
+            });
+        }
+        _ => {}
+    }
+
+    // Standard conflict resolution: higher role wins, or latest timestamp for equal roles
+    let resolution = resolve_conflict(local_authority, remote_authority, &local_entry.timestamp, &remote_timestamp);
+
+    let winning_data = if resolution.resolution == "remote" {
+        Some(remote_data)
+    } else {
+        Some(local_entry.data)
+    };
+
+    // Mark the local entry as resolved (it will be replaced by the winning data)
+    conn.execute(
+        "UPDATE sync_queue SET synced = 1 WHERE id = ?1",
+        params![local_entry.id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(ConflictResolutionResult {
+        resolution: resolution.resolution,
+        winning_data,
+        conflict_type: resolution.conflict_type,
+    })
+}
+
+#[tauri::command]
+fn apply_synced_change(
+    state: State<AppState>,
+    operation: String,
+    table_name: String,
+    record_id: String,
+    data: String,
+) -> Result<(), String> {
+    let conn = state.db.lock();
+    let now = Utc::now().to_rfc3339();
+
+    // First try to delete existing record (for update operations)
+    if operation == "update" || operation == "delete" {
+        let _ = conn.execute(
+            format!("DELETE FROM {} WHERE id = ?1", table_name).as_str(),
+            params![&record_id],
+        );
+    }
+
+    // Insert the new record (for create and update operations)
+    if operation != "delete" {
+        let parsed: serde_json::Value = serde_json::from_str(&data)
+            .map_err(|e| format!("Invalid JSON data: {}", e))?;
+
+        match table_name.as_str() {
+            "students" => {
+                let first_name = parsed.get("firstName").and_then(|v| v.as_str()).unwrap_or("");
+                let last_name = parsed.get("lastName").and_then(|v| v.as_str()).unwrap_or("");
+                let dob = parsed.get("dateOfBirth").and_then(|v| v.as_str()).unwrap_or("");
+                let gender = parsed.get("gender").and_then(|v| v.as_str()).unwrap_or("");
+                let class_id = parsed.get("classId").and_then(|v| v.as_str()).unwrap_or("");
+                let section = parsed.get("section").and_then(|v| v.as_str());
+                let parent_name = parsed.get("parentName").and_then(|v| v.as_str()).unwrap_or("");
+                let parent_phone = parsed.get("parentPhone").and_then(|v| v.as_str()).unwrap_or("");
+                let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO students (id, admission_number, first_name, last_name,
+                     date_of_birth, gender, class_id, section, parent_name, parent_phone, address, created_at, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                    params![&record_id, &record_id, first_name, last_name, dob, gender, class_id, section, parent_name, parent_phone, address, &now, &now],
+                ).map_err(|e| e.to_string())?;
+            }
+            "staff" => {
+                let first_name = parsed.get("firstName").and_then(|v| v.as_str()).unwrap_or("");
+                let last_name = parsed.get("lastName").and_then(|v| v.as_str()).unwrap_or("");
+                let designation = parsed.get("designation").and_then(|v| v.as_str()).unwrap_or("");
+                let department = parsed.get("department").and_then(|v| v.as_str()).unwrap_or("");
+                let date_joining = parsed.get("dateOfJoining").and_then(|v| v.as_str()).unwrap_or("");
+                let phone = parsed.get("phone").and_then(|v| v.as_str()).unwrap_or("");
+                let email = parsed.get("email").and_then(|v| v.as_str());
+                let salary = parsed.get("salary").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let is_active = parsed.get("isActive").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO staff (id, employee_id, first_name, last_name,
+                     designation, department, date_of_joining, phone, email, salary, is_active, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    params![&record_id, &record_id, first_name, last_name, designation, department,
+                           date_joining, phone, email, salary, if is_active { 1 } else { 0 }, &now],
+                ).map_err(|e| e.to_string())?;
+            }
+            _ => {
+                return Err(format!("Table {} sync not implemented yet", table_name));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_synced_operations(state: State<AppState>, before_timestamp: String) -> Result<i32, String> {
+    let conn = state.db.lock();
+    let deleted = conn.execute(
+        "DELETE FROM sync_queue WHERE synced = 1 AND timestamp < ?1",
+        params![&before_timestamp],
+    ).map_err(|e| e.to_string())?;
+    Ok(deleted as i32)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2114,27 +2782,334 @@ static _SERVER_HANDLE: Lazy<std::sync::Arc<RwLock<Option<std::thread::JoinHandle
     Lazy::new(|| std::sync::Arc::new(RwLock::new(None)));
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    env_logger::init();
+pub fn run() -> Result<(), String> {
+    let dsn = std::env::var("SENTRY_DSN").ok();
+
+    if dsn.is_some() {
+        info!("Initializing Sentry crash reporting");
+    }
+
+    let _guard = if let Some(dsn_val) = dsn {
+        let mut options = ClientOptions::default();
+        if let Ok(parsed) = dsn_val.parse() {
+            options.dsn = Some(parsed);
+        }
+        options.environment = Some("production".into());
+        Some(init(options))
+    } else {
+        info!("Sentry DSN not configured - crash reporting disabled");
+        None
+    };
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_target(true).with_thread_ids(true))
+        .with(filter)
+        .init();
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = format!("PANIC: {}", panic_info);
+        capture_message(&msg, sentry::Level::Error);
+        eprintln!("{}", msg);
+    }));
+
+    info!("Educom starting up");
+
+    // ── New Commands: Setup & Invites ─────────────────────────────────────────
+    // Check if any users exist (for first-run detection)
+    #[tauri::command]
+    fn has_users(state: State<AppState>) -> Result<bool, String> {
+        let conn = state.db.lock();
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
+
+    #[tauri::command]
+    fn create_invite(
+        state: State<AppState>,
+        data: InviteCreateInput,
+        created_by: String,
+    ) -> Result<Invite, String> {
+        if data.full_name.trim().is_empty() {
+            return Err("Full name is required".to_string());
+        }
+        if data.username.trim().is_empty() {
+            return Err("Username is required".to_string());
+        }
+        if data.password.len() < 6 {
+            return Err("Password must be at least 6 characters".to_string());
+        }
+        let valid_roles = ["admin", "management", "finance", "teacher"];
+        if !valid_roles.contains(&data.role.as_str()) {
+            return Err("Invalid role".to_string());
+        }
+
+        let conn = state.db.lock();
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+        let code = format!("EDU-{}", &Uuid::new_v4().to_string()[..8].to_uppercase());
+
+        let hash = hash_password(&data.password).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO invites (id, invite_code, full_name, role, username, password_hash,
+                                  created_by, created_at, expires_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending')",
+            params![&id, &code, &data.full_name, &data.role, &data.username, &hash,
+                    &created_by, &now, &expires_at],
+        )
+        .map_err(|e| sqlite_error_to_string(e, "Username already exists"))?;
+
+        Ok(Invite {
+            id,
+            invite_code: code,
+            full_name: data.full_name,
+            role: data.role,
+            username: data.username,
+            password_hash: hash,
+            status: "pending".to_string(),
+            created_by,
+            created_at: now,
+            expires_at,
+            used_by: None,
+        })
+    }
+
+    #[tauri::command]
+    fn get_invites(state: State<AppState>) -> Result<Vec<Invite>, String> {
+        let conn = state.db.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, invite_code, full_name, role, username, password_hash, status, created_by,
+                        created_at, expires_at, used_by
+                 FROM invites ORDER BY created_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let invites = stmt
+            .query_map([], |row| {
+                Ok(Invite {
+                    id: row.get(0)?,
+                    invite_code: row.get(1)?,
+                    full_name: row.get(2)?,
+                    role: row.get(3)?,
+                    username: row.get(4)?,
+                    password_hash: row.get(5)?,
+                    status: row.get(6)?,
+                    created_by: row.get(7)?,
+                    created_at: row.get(8)?,
+                    expires_at: row.get(9)?,
+                    used_by: row.get(10)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(invites)
+    }
+
+    #[tauri::command]
+    fn accept_invite(
+        state: State<AppState>,
+        invite_code: String,
+    ) -> Result<User, String> {
+        let conn = state.db.lock();
+        let now = Utc::now().to_rfc3339();
+
+        let invite: Invite = conn
+            .query_row(
+                "SELECT id, invite_code, full_name, role, username, password_hash,
+                        created_by, created_at, expires_at, status, used_by
+                 FROM invites WHERE invite_code = ?1",
+                params![&invite_code],
+                |row| {
+                    Ok(Invite {
+                        id: row.get(0)?,
+                        invite_code: row.get(1)?,
+                        full_name: row.get(2)?,
+                        role: row.get(3)?,
+                        username: row.get(4)?,
+                        password_hash: row.get(5)?,
+                        status: row.get(9)?,
+                        created_by: row.get(6)?,
+                        created_at: row.get(7)?,
+                        expires_at: row.get(8)?,
+                        used_by: row.get(10)?,
+                    })
+                },
+            )
+            .map_err(|_| "Invalid invite code".to_string())?;
+
+        if invite.status != "pending" {
+            return Err("Invite has already been used or expired".to_string());
+        }
+
+        let expires = chrono::DateTime::parse_from_rfc3339(&invite.expires_at)
+            .map_err(|e| e.to_string())?
+            .with_timezone(&Utc);
+        if Utc::now() > expires {
+            conn.execute(
+                "UPDATE invites SET status = 'expired' WHERE id = ?1",
+                params![&invite.id],
+            )
+            .map_err(|e| e.to_string())?;
+            return Err("Invite has expired".to_string());
+        }
+
+        let user_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO users (id, username, role, full_name, password_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![&user_id, &invite.username, &invite.role, &invite.full_name,
+                    &invite.password_hash, &now],
+        )
+        .map_err(|e| sqlite_error_to_string(e, "Username already exists"))?;
+
+        conn.execute(
+            "UPDATE invites SET status = 'accepted', used_by = ?1 WHERE id = ?2",
+            params![&user_id, &invite.id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(User {
+            id: user_id,
+            username: invite.username,
+            role: invite.role,
+            full_name: invite.full_name,
+            email: None,
+            created_at: now.clone(),
+            last_login: None,
+        })
+    }
+
+    #[tauri::command]
+    fn delete_invite(state: State<AppState>, id: String) -> Result<(), String> {
+        let conn = state.db.lock();
+        let rows = conn
+            .execute("DELETE FROM invites WHERE id = ?1", params![&id])
+            .map_err(|e| e.to_string())?;
+        if rows == 0 {
+            return Err("Invite not found".to_string());
+        }
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn get_server_status(state: State<AppState>) -> Result<ServerStatus, String> {
+        let mode = state.server_mode.read().clone();
+        let url = state.server_url.read().clone();
+        let handle = state.http_server_handle.lock();
+        let running = handle.is_some();
+        Ok(ServerStatus { mode, server_url: url, is_running: running })
+    }
+
+    #[tauri::command]
+    fn configure_remote_server(state: State<AppState>, server_url: String) -> Result<(), String> {
+        if !server_url.starts_with("http://") && !server_url.starts_with("https://") {
+            return Err("Server URL must start with http:// or https://".to_string());
+        }
+        *state.server_url.write() = Some(server_url.clone());
+        *state.server_mode.write() = "remote".to_string();
+        info!("Configured remote server: {}", server_url);
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn start_local_server(state: State<AppState>, port: Option<u16>) -> Result<String, String> {
+        use axum::Router;
+        use axum::routing::get;
+        use std::net::SocketAddr;
+        use tower_http::cors::{Any, CorsLayer};
+        use std::sync::atomic::{AtomicU16, Ordering};
+
+        static CURRENT_PORT: AtomicU16 = AtomicU16::new(0);
+
+        let p = port.unwrap_or(8080);
+        let addr: SocketAddr = ([0, 0, 0, 0], p).into();
+
+        let router = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
+
+        let handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            CURRENT_PORT.store(p, Ordering::SeqCst);
+            info!("Local HTTP server listening on {}", addr);
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        *state.http_server_handle.lock() = Some(handle);
+        *state.server_mode.write() = "local".to_string();
+        *state.server_url.write() = Some(format!("http://localhost:{}", p));
+
+        Ok(format!("http://localhost:{}", p))
+    }
+
+    #[tauri::command]
+    fn stop_local_server(state: State<AppState>) -> Result<(), String> {
+        let mut handle = state.http_server_handle.lock();
+        if let Some(h) = handle.take() {
+            h.abort();
+            *state.server_mode.write() = "standalone".to_string();
+            info!("Local HTTP server stopped");
+            Ok(())
+        } else {
+            Err("No local server running".to_string())
+        }
+    }
+
+    #[derive(Serialize)]
+    struct ServerStatus {
+        mode: String,
+        server_url: Option<String>,
+        is_running: bool,
+    }
 
     let db_path = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("educom")
         .join("educom.db");
 
+    info!("Platform: {} {}", std::env::consts::OS, std::env::consts::ARCH);
+    info!("Database path: {:?}", db_path);
+
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            error!("Failed to create database directory: {}", e);
+        }
     }
 
-    let conn = Connection::open(&db_path).expect("Failed to open database");
-    init_database(&conn).expect("Failed to initialize database");
-    seed_demo_data(&conn).expect("Failed to seed demo data");
+    let conn = Connection::open(&db_path).map_err(|e| {
+        error!("Failed to open database at {:?}: {}", db_path, e);
+        e.to_string()
+    })?;
+    init_database(&conn).map_err(|e| {
+        error!("Failed to initialize database schema: {}", e);
+        e.to_string()
+    })?;
+    seed_demo_data(&conn).map_err(|e| {
+        error!("Failed to seed demo data: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Database initialized successfully");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
-            db: Mutex::new(conn),
+            db: Arc::new(Mutex::new(conn)),
             server_mode: RwLock::new("standalone".to_string()),
+            server_url: RwLock::new(None),
+            http_server_handle: Mutex::new(None),
+            login_attempts: Arc::new(Mutex::new(HashMap::new())),
+            db_stats: DbStats::default(),
         })
         .invoke_handler(tauri::generate_handler![
             // Auth
@@ -2188,7 +3163,25 @@ pub fn run() {
             create_ledger_entry,
             // Sync
             get_sync_status,
+            queue_sync_operation,
+            get_pending_sync_operations,
+            mark_operations_synced,
+            resolve_and_apply_remote_change,
+            apply_synced_change,
+            clear_synced_operations,
+            // Setup & Invites
+            has_users,
+            create_invite,
+            get_invites,
+            accept_invite,
+            delete_invite,
+            // Server
+            get_server_status,
+            configure_remote_server,
+            start_local_server,
+            stop_local_server,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

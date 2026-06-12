@@ -14,6 +14,20 @@ export type Permission =
   | 'users:view' | 'users:manage'
   | 'settings:view' | 'settings:edit';
 
+// Role hierarchy for sync conflict resolution (higher index = higher authority)
+export const ROLE_HIERARCHY: UserRole[] = ['teacher', 'finance', 'management', 'admin'];
+
+export function compareRoleAuthority(roleA: UserRole, roleB: UserRole): number {
+  const idxA = ROLE_HIERARCHY.indexOf(roleA);
+  const idxB = ROLE_HIERARCHY.indexOf(roleB);
+  return idxA - idxB;
+}
+
+// Returns true if roleA has higher or equal authority than roleB
+export function roleHasHigherOrEqualAuthority(roleA: UserRole, roleB: UserRole): boolean {
+  return compareRoleAuthority(roleA, roleB) >= 0;
+}
+
 const rolePermissions: Record<UserRole, Permission[]> = {
   management: [
     'students:view', 'students:create', 'students:edit', 'students:delete',

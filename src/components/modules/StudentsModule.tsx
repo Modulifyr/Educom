@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '../../store/appStore';
-import type { Student } from '../../types';
+import type { Student, Stream } from '../../types';
 import { Plus, Search, Filter, Edit2, Trash2, X, Save } from 'lucide-react';
 
 interface StudentFormData {
   firstName: string;
   lastName: string;
   admissionNumber: string;
+  rollNumber: string;
   classId: string;
+  section: string;
   dateOfBirth: string;
   gender: 'male' | 'female' | 'other';
+  grade: string;
+  semester: string;
+  stream: Stream;
   parentName: string;
   parentPhone: string;
   address: string;
@@ -19,9 +24,14 @@ const initialFormData: StudentFormData = {
   firstName: '',
   lastName: '',
   admissionNumber: '',
+  rollNumber: '',
   classId: '1',
+  section: '',
   dateOfBirth: '',
   gender: 'male',
+  grade: '',
+  semester: '',
+  stream: 'none',
   parentName: '',
   parentPhone: '',
   address: ''
@@ -68,9 +78,14 @@ export function StudentsModule() {
       firstName: student.firstName,
       lastName: student.lastName,
       admissionNumber: student.admissionNumber,
+      rollNumber: student.rollNumber || '',
       classId: String(student.classId),
+      section: student.section || '',
       dateOfBirth: student.dateOfBirth || '',
       gender: student.gender || 'male',
+      grade: student.grade || '',
+      semester: student.semester || '',
+      stream: student.stream || 'none',
       parentName: student.parentName,
       parentPhone: student.parentPhone,
       address: student.address || ''
@@ -92,9 +107,14 @@ export function StudentsModule() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           admissionNumber: formData.admissionNumber,
+          rollNumber: formData.rollNumber,
           classId: formData.classId,
+          section: formData.section,
           dateOfBirth: formData.dateOfBirth,
           gender: formData.gender,
+          grade: formData.grade,
+          semester: formData.semester,
+          stream: formData.stream,
           parentName: formData.parentName,
           parentPhone: formData.parentPhone,
           address: formData.address
@@ -104,9 +124,14 @@ export function StudentsModule() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           admissionNumber: formData.admissionNumber,
+          rollNumber: formData.rollNumber,
           classId: formData.classId,
+          section: formData.section,
           dateOfBirth: formData.dateOfBirth,
           gender: formData.gender,
+          grade: formData.grade,
+          semester: formData.semester,
+          stream: formData.stream,
           parentName: formData.parentName,
           parentPhone: formData.parentPhone,
           address: formData.address
@@ -188,8 +213,11 @@ export function StudentsModule() {
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Admission #</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Roll #</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Name</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Class</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Class/Section</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Grade/Semester</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Stream</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Parent</th>
                   <th className="px-4 py-3 text-left text-sm font-semibold text-slate-600">Phone</th>
                   {(canEdit || canDelete) && (
@@ -201,10 +229,13 @@ export function StudentsModule() {
                 {filtered.map(student => (
                   <tr key={student.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 text-sm text-slate-700">{student.admissionNumber}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{student.rollNumber || '-'}</td>
                     <td className="px-4 py-3 text-sm font-medium text-slate-800">
                       {student.firstName} {student.lastName}
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-600">Class {student.classId}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">Class {student.classId}{student.section ? ` - ${student.section}` : ''}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{student.grade || student.semester || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600 capitalize">{student.stream || 'none'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{student.parentName}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{student.parentPhone}</td>
                     {(canEdit || canDelete) && (
@@ -278,7 +309,7 @@ export function StudentsModule() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">
                     Admission Number <span className="text-red-500">*</span>
@@ -289,6 +320,16 @@ export function StudentsModule() {
                     onChange={e => setFormData({ ...formData, admissionNumber: e.target.value })}
                     className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     placeholder="e.g., STU-001"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Roll Number</label>
+                  <input
+                    type="text"
+                    value={formData.rollNumber}
+                    onChange={e => setFormData({ ...formData, rollNumber: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="e.g., 001"
                   />
                 </div>
                 <div>
@@ -303,11 +344,64 @@ export function StudentsModule() {
                     <option value="3">Class 3</option>
                     <option value="4">Class 4</option>
                     <option value="5">Class 5</option>
+                    <option value="6">Class 6</option>
+                    <option value="7">Class 7</option>
+                    <option value="8">Class 8</option>
+                    <option value="9">Class 9</option>
+                    <option value="10">Class 10</option>
+                    <option value="11">Class 11</option>
+                    <option value="12">Class 12</option>
                   </select>
                 </div>
               </div>
 
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Section</label>
+                  <input
+                    type="text"
+                    value={formData.section}
+                    onChange={e => setFormData({ ...formData, section: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="e.g., A"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Grade</label>
+                  <input
+                    type="text"
+                    value={formData.grade}
+                    onChange={e => setFormData({ ...formData, grade: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="e.g., 10"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Semester</label>
+                  <input
+                    type="text"
+                    value={formData.semester}
+                    onChange={e => setFormData({ ...formData, semester: e.target.value })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="e.g., 3"
+                  />
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Stream</label>
+                  <select
+                    value={formData.stream}
+                    onChange={e => setFormData({ ...formData, stream: e.target.value as Stream })}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  >
+                    <option value="none">None</option>
+                    <option value="science">Science</option>
+                    <option value="commerce">Commerce</option>
+                    <option value="arts">Arts</option>
+                  </select>
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Date of Birth</label>
                   <input
@@ -317,6 +411,9 @@ export function StudentsModule() {
                     className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Gender</label>
                   <select

@@ -10,13 +10,19 @@ export interface User {
   lastLogin?: string;
 }
 
+export type Stream = 'science' | 'commerce' | 'arts' | 'none';
+
 export interface Student {
   id: string;
   admissionNumber: string;
+  rollNumber?: string;
   firstName: string;
   lastName: string;
   dateOfBirth: string;
   gender: 'male' | 'female' | 'other';
+  grade?: string;
+  semester?: string;
+  stream?: Stream;
   classId: string;
   section?: string;
   parentName: string;
@@ -139,4 +145,60 @@ export interface SyncStatus {
   pendingChanges: number;
   syncState: 'idle' | 'syncing' | 'error';
   errorMessage?: string;
+}
+
+export interface SyncQueueEntry {
+  id: string;
+  operation: 'create' | 'update' | 'delete';
+  tableName: string;
+  recordId: string;
+  data: string;
+  userRole: string;
+  timestamp: string;
+  synced: boolean;
+}
+
+export interface ConflictResolutionResult {
+  resolution: 'local' | 'remote' | 'merged';
+  winningData?: string;
+  conflictType: 'none' | 'update_update' | 'update_delete' | 'delete_delete' | 'append_only' | 'immutable' | 'additive';
+}
+
+export interface SyncOperation {
+  id?: string;
+  operation: 'create' | 'update' | 'delete';
+  tableName: string;
+  recordId: string;
+  data: Record<string, unknown>;
+  userRole: string;
+  timestamp?: string;
+}
+
+export interface SyncResult {
+  success: boolean;
+  pushed: number;
+  pulled: number;
+  conflicts: number;
+  errors: string[];
+}
+
+export interface Invite {
+  id: string;
+  inviteCode: string;
+  fullName: string;
+  role: UserRole;
+  username: string;
+  passwordHash: string;
+  status: 'pending' | 'accepted' | 'expired';
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  usedBy?: string;
+}
+
+export interface InviteCreateInput {
+  fullName: string;
+  role: UserRole;
+  username: string;
+  password: string;
 }
