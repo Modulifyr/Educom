@@ -5,6 +5,10 @@ import type {
     SyncQueueEntry, ConflictResolutionResult
 } from '../types';
 
+// NOTE: Rust structs use #[serde(rename = "camelCase")] on every field.
+// Tauri IPC therefore sends and receives camelCase JSON.
+// No snake_case translation is needed — the TypeScript types already match.
+
 export interface DatabaseService {
     initialize(): Promise<void>;
 
@@ -95,167 +99,53 @@ export interface DatabaseService {
     };
 }
 
-interface RustUser {
-    id: string;
-    username: string;
-    role: string;
-    full_name: string;
-    email: string | null;
-    created_at: string;
-    last_login: string | null;
-}
-
-interface RustStudent {
-    id: string;
-    admission_number: string;
-    first_name: string;
-    last_name: string;
-    date_of_birth: string;
-    gender: string;
-    class_id: string;
-    section: string | null;
-    parent_name: string;
-    parent_phone: string;
-    address: string;
-    created_at: string;
-    updated_at: string;
-}
-
-interface RustStaff {
-    id: string;
-    employee_id: string;
-    first_name: string;
-    last_name: string;
-    designation: string;
-    department: string;
-    date_of_joining: string;
-    phone: string;
-    email: string | null;
-    salary: number;
-    is_active: boolean;
-    created_at: string;
-}
-
-function toUser(r: RustUser): User {
-    return {
-        id: r.id,
-        username: r.username,
-        role: r.role as User['role'],
-        fullName: r.full_name,
-        email: r.email ?? undefined,
-        createdAt: r.created_at,
-        lastLogin: r.last_login ?? undefined,
-    };
-}
-
-function toStudent(r: RustStudent): Student {
-    return {
-        id: r.id,
-        admissionNumber: r.admission_number,
-        firstName: r.first_name,
-        lastName: r.last_name,
-        dateOfBirth: r.date_of_birth,
-        gender: r.gender as Student['gender'],
-        classId: r.class_id,
-        section: r.section ?? undefined,
-        parentName: r.parent_name,
-        parentPhone: r.parent_phone,
-        address: r.address,
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
-    };
-}
-
-function toStaff(r: RustStaff): Staff {
-    return {
-        id: r.id,
-        employeeId: r.employee_id,
-        firstName: r.first_name,
-        lastName: r.last_name,
-        designation: r.designation,
-        department: r.department,
-        dateOfJoining: r.date_of_joining,
-        phone: r.phone,
-        email: r.email ?? undefined,
-        salary: r.salary,
-        isActive: r.is_active,
-        createdAt: r.created_at,
-    };
-}
-
-function fromUser(u: Omit<User, 'id' | 'createdAt'> & { password: string }) {
-    return {
-        username: u.username,
-        role: u.role,
-        full_name: u.fullName,
-        email: u.email ?? null,
-        password: u.password,
-    };
-}
-
-function fromStudent(s: Omit<Student, 'id' | 'createdAt' | 'updatedAt'>) {
-    return {
-        admission_number: s.admissionNumber,
-        first_name: s.firstName,
-        last_name: s.lastName,
-        date_of_birth: s.dateOfBirth,
-        gender: s.gender,
-        class_id: s.classId,
-        section: s.section ?? null,
-        parent_name: s.parentName,
-        parent_phone: s.parentPhone,
-        address: s.address,
-    };
-}
-
-function fromStaff(st: Omit<Staff, 'id' | 'createdAt'>) {
-    return {
-        employee_id: st.employeeId,
-        first_name: st.firstName,
-        last_name: st.lastName,
-        designation: st.designation,
-        department: st.department,
-        date_of_joining: st.dateOfJoining,
-        phone: st.phone,
-        email: st.email ?? null,
-        salary: st.salary,
-        is_active: st.isActive,
-    };
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// The Rust backend serializes fields with camelCase renames, e.g.:
+//   full_name  → fullName
+//   created_at → createdAt
+//   last_login → lastLogin
+// So the JSON response already matches our TypeScript User/Student/Staff types.
+// We cast directly; no mapper needed.
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function createDatabaseService(): DatabaseService {
     return {
         async initialize() {
-            // Tauri backend initializes the SQLite DB on app start
+            // SQLite DB is initialized by Tauri on app start; nothing to do here.
         },
+
+        // ── Users ──────────────────────────────────────────────────────────────
 
         users: {
             async getAll(): Promise<User[]> {
-                const rustUsers = await invoke<RustUser[]>('get_users');
-                return rustUsers.map(toUser);
+                return invoke<User[]>('get_users');
             },
 
-            async getById(id: string): Promise<User | null> {
+            async getById(id): Promise<User | null> {
                 const users = await this.getAll();
-                return users.find(u => u.id === id) || null;
+                return users.find(u => u.id === id) ?? null;
             },
 
             async create(userData): Promise<User> {
-                const rustUser = await invoke<RustUser>('create_user', {
-                    data: fromUser(userData)
+                return invoke<User>('create_user', {
+                    data: {
+                        username: userData.username,
+                        role: userData.role,
+                        fullName: userData.fullName,
+                        email: userData.email ?? null,
+                        password: userData.password,
+                    }
                 });
-                return toUser(rustUser);
             },
 
             async update(id, data): Promise<User> {
-                const rustUser = await invoke<RustUser>('update_user', {
+                return invoke<User>('update_user', {
                     id,
-                    full_name: data.fullName,
+                    fullName: data.fullName,
                     email: data.email,
                     role: data.role,
-                    password: data.password
+                    password: data.password,
                 });
-                return toUser(rustUser);
             },
 
             async delete(id): Promise<void> {
@@ -263,35 +153,65 @@ export function createDatabaseService(): DatabaseService {
             },
 
             async authenticate(username, password): Promise<User | null> {
-                const rustUser = await invoke<RustUser | null>('authenticate_user', { username, password });
-                return rustUser ? toUser(rustUser) : null;
+                return invoke<User | null>('authenticate_user', { username, password });
             }
         },
 
+        // ── Students ───────────────────────────────────────────────────────────
+
         students: {
             async getAll(filters?): Promise<Student[]> {
-                const rustStudents = await invoke<RustStudent[]>('get_students', { classId: filters?.classId });
-                return rustStudents.map(toStudent);
+                return invoke<Student[]>('get_students', {
+                    classId: filters?.classId ?? null,
+                });
             },
 
             async getById(id): Promise<Student | null> {
                 const students = await this.getAll();
-                return students.find(s => s.id === id) || null;
+                return students.find(s => s.id === id) ?? null;
             },
 
             async create(studentData): Promise<Student> {
-                const rustStudent = await invoke<RustStudent>('create_student', {
-                    data: fromStudent(studentData)
+                return invoke<Student>('create_student', {
+                    data: {
+                        admissionNumber: studentData.admissionNumber,
+                        rollNumber: studentData.rollNumber ?? null,
+                        firstName: studentData.firstName,
+                        lastName: studentData.lastName,
+                        dateOfBirth: studentData.dateOfBirth,
+                        gender: studentData.gender,
+                        grade: studentData.grade ?? null,
+                        semester: studentData.semester ?? null,
+                        stream: studentData.stream ?? null,
+                        classId: studentData.classId,
+                        section: studentData.section ?? null,
+                        parentName: studentData.parentName,
+                        parentPhone: studentData.parentPhone,
+                        address: studentData.address,
+                    }
                 });
-                return toStudent(rustStudent);
             },
 
             async update(id, data): Promise<Student> {
-                const rustStudent = await invoke<RustStudent>('update_student', {
+                return invoke<Student>('update_student', {
                     id,
-                    data: fromStudent(data as any)
+                    data: {
+                        admissionNumber: data.admissionNumber ?? '',
+                        rollNumber: data.rollNumber ?? null,
+                        firstName: data.firstName ?? '',
+                        lastName: data.lastName ?? '',
+                        dateOfBirth: data.dateOfBirth ?? '',
+                        gender: data.gender ?? 'male',
+                        grade: data.grade ?? null,
+                        semester: data.semester ?? null,
+                        stream: data.stream ?? null,
+                        classId: data.classId ?? '1',
+                        section: data.section ?? null,
+                        parentName: data.parentName ?? '',
+                        parentPhone: data.parentPhone ?? '',
+                        address: data.address ?? '',
+                    }
                 });
-                return toStudent(rustStudent);
             },
 
             async delete(id): Promise<void> {
@@ -299,35 +219,75 @@ export function createDatabaseService(): DatabaseService {
             },
 
             async bulkImport(records): Promise<number> {
-                const count = await invoke<number>('bulk_import_students', { records: records.map(fromStudent) });
-                return count;
+                return invoke<number>('bulk_import_students', {
+                    records: records.map(s => ({
+                        admissionNumber: s.admissionNumber,
+                        rollNumber: s.rollNumber ?? null,
+                        firstName: s.firstName,
+                        lastName: s.lastName,
+                        dateOfBirth: s.dateOfBirth,
+                        gender: s.gender,
+                        grade: s.grade ?? null,
+                        semester: s.semester ?? null,
+                        stream: s.stream ?? null,
+                        classId: s.classId,
+                        section: s.section ?? null,
+                        parentName: s.parentName,
+                        parentPhone: s.parentPhone,
+                        address: s.address,
+                    }))
+                });
             }
         },
 
+        // ── Staff ──────────────────────────────────────────────────────────────
+
         staff: {
             async getAll(filters?): Promise<Staff[]> {
-                const rustStaff = await invoke<RustStaff[]>('get_staff', { department: filters?.department, isActive: filters?.isActive });
-                return rustStaff.map(toStaff);
+                return invoke<Staff[]>('get_staff', {
+                    department: filters?.department ?? null,
+                    isActive: filters?.isActive ?? null,
+                });
             },
 
             async getById(id): Promise<Staff | null> {
-                const staffMembers = await this.getAll();
-                return staffMembers.find(s => s.id === id) || null;
+                const staffList = await this.getAll();
+                return staffList.find(s => s.id === id) ?? null;
             },
 
             async create(staffData): Promise<Staff> {
-                const rustStaff = await invoke<RustStaff>('create_staff', {
-                    data: fromStaff(staffData)
+                return invoke<Staff>('create_staff', {
+                    data: {
+                        employeeId: staffData.employeeId,
+                        firstName: staffData.firstName,
+                        lastName: staffData.lastName,
+                        designation: staffData.designation,
+                        department: staffData.department,
+                        dateOfJoining: staffData.dateOfJoining,
+                        phone: staffData.phone,
+                        email: staffData.email ?? null,
+                        salary: staffData.salary,
+                        isActive: staffData.isActive,
+                    }
                 });
-                return toStaff(rustStaff);
             },
 
             async update(id, data): Promise<Staff> {
-                const rustStaff = await invoke<RustStaff>('update_staff', {
+                return invoke<Staff>('update_staff', {
                     id,
-                    data: fromStaff(data as any)
+                    data: {
+                        employeeId: data.employeeId ?? '',
+                        firstName: data.firstName ?? '',
+                        lastName: data.lastName ?? '',
+                        designation: data.designation ?? '',
+                        department: data.department ?? '',
+                        dateOfJoining: data.dateOfJoining ?? '',
+                        phone: data.phone ?? '',
+                        email: data.email ?? null,
+                        salary: data.salary ?? 0,
+                        isActive: data.isActive ?? true,
+                    }
                 });
-                return toStaff(rustStaff);
             },
 
             async delete(id): Promise<void> {
@@ -335,168 +295,174 @@ export function createDatabaseService(): DatabaseService {
             },
 
             async bulkImport(records): Promise<number> {
-                // Not implemented in Rust, fallback to individual creates
                 let count = 0;
                 for (const record of records) {
-                    await this.create(record);
-                    count++;
+                    try {
+                        await this.create(record);
+                        count++;
+                    } catch {
+                        // Skip duplicates
+                    }
                 }
                 return count;
             }
         },
 
+        // ── Attendance ─────────────────────────────────────────────────────────
+
         attendance: {
             async getAll(filters?): Promise<AttendanceRecord[]> {
-                const records = await invoke<AttendanceRecord[]>('get_attendance', {
-                    date: filters?.date,
-                    studentId: filters?.studentId,
-                    staffId: filters?.staffId
+                return invoke<AttendanceRecord[]>('get_attendance', {
+                    date: filters?.date ?? null,
+                    studentId: filters?.studentId ?? null,
+                    staffId: filters?.staffId ?? null,
                 });
-                return records;
             },
 
             async create(recordData): Promise<AttendanceRecord> {
-                const record = await invoke<AttendanceRecord>('create_attendance', {
+                return invoke<AttendanceRecord>('create_attendance', {
                     data: {
-                        student_id: recordData.studentId,
-                        staff_id: recordData.staffId,
+                        studentId: recordData.studentId ?? null,
+                        staffId: recordData.staffId ?? null,
                         date: recordData.date,
                         status: recordData.status,
-                        remarks: recordData.remarks,
-                        recorded_by: recordData.recordedBy
+                        remarks: recordData.remarks ?? null,
+                        recordedBy: recordData.recordedBy,
                     }
                 });
-                return record;
             },
 
             async bulkCreate(recordsData): Promise<number> {
-                const count = await invoke<number>('bulk_create_attendance', {
+                return invoke<number>('bulk_create_attendance', {
                     records: recordsData.map(r => ({
-                        student_id: r.studentId,
-                        staff_id: r.staffId,
+                        studentId: r.studentId ?? null,
+                        staffId: r.staffId ?? null,
                         date: r.date,
                         status: r.status,
-                        remarks: r.remarks,
-                        recorded_by: r.recordedBy
+                        remarks: r.remarks ?? null,
+                        recordedBy: r.recordedBy,
                     }))
                 });
-                return count;
             },
 
             async getByDateRange(startDate, endDate): Promise<AttendanceRecord[]> {
-                const records = await invoke<AttendanceRecord[]>('get_attendance_by_range', { startDate, endDate });
-                return records;
+                return invoke<AttendanceRecord[]>('get_attendance_by_range', { startDate, endDate });
             }
         },
+
+        // ── Salary ─────────────────────────────────────────────────────────────
 
         salary: {
             async getAll(filters?): Promise<SalaryRecord[]> {
-                const records = await invoke<SalaryRecord[]>('get_salary', {
-                    staffId: filters?.staffId,
-                    month: filters?.month,
-                    status: filters?.status
+                return invoke<SalaryRecord[]>('get_salary', {
+                    staffId: filters?.staffId ?? null,
+                    month: filters?.month ?? null,
+                    status: filters?.status ?? null,
                 });
-                return records;
             },
 
             async update(id, data): Promise<SalaryRecord> {
-                const record = await invoke<SalaryRecord>('update_salary', {
+                return invoke<SalaryRecord>('update_salary', {
                     id,
                     status: data.status,
-                    paymentDate: data.paymentDate
+                    paymentDate: data.paymentDate ?? null,
                 });
-                return record;
             },
 
             async processBulk(staffIds, month, year, processedBy): Promise<SalaryRecord[]> {
-                const records = await invoke<SalaryRecord[]>('process_bulk_salary', { staffIds, month, year, processedBy });
-                return records;
+                return invoke<SalaryRecord[]>('process_bulk_salary', {
+                    staffIds, month, year, processedBy
+                });
             }
         },
 
+        // ── Fees ───────────────────────────────────────────────────────────────
+
         fees: {
             async getAll(filters?): Promise<FeeRecord[]> {
-                const records = await invoke<FeeRecord[]>('get_fees', {
-                    studentId: filters?.studentId,
-                    status: filters?.status,
-                    academicYear: filters?.academicYear
+                return invoke<FeeRecord[]>('get_fees', {
+                    studentId: filters?.studentId ?? null,
+                    status: filters?.status ?? null,
+                    academicYear: filters?.academicYear ?? null,
                 });
-                return records;
             },
 
             async create(recordData): Promise<FeeRecord> {
-                const record = await invoke<FeeRecord>('create_fee', {
+                return invoke<FeeRecord>('create_fee', {
                     data: {
-                        student_id: recordData.studentId,
-                        fee_type: recordData.feeType,
+                        studentId: recordData.studentId,
+                        feeType: recordData.feeType,
                         amount: recordData.amount,
-                        due_date: recordData.dueDate,
-                        paid_amount: recordData.paidAmount,
+                        dueDate: recordData.dueDate,
+                        paidAmount: recordData.paidAmount,
                         status: recordData.status,
-                        academic_year: recordData.academicYear,
-                        remarks: recordData.remarks
+                        academicYear: recordData.academicYear,
+                        remarks: recordData.remarks ?? null,
                     }
                 });
-                return record;
             },
 
             async recordPayment(id, amount): Promise<FeeRecord> {
-                const record = await invoke<FeeRecord>('record_fee_payment', { id, amount });
-                return record;
+                return invoke<FeeRecord>('record_fee_payment', { id, amount });
             },
 
             async bulkImport(recordsData): Promise<number> {
                 let count = 0;
                 for (const record of recordsData) {
-                    await this.create(record);
-                    count++;
+                    try {
+                        await this.create(record);
+                        count++;
+                    } catch {
+                        // Skip
+                    }
                 }
                 return count;
             }
         },
 
+        // ── Inventory ──────────────────────────────────────────────────────────
+
         inventory: {
             async getAll(filters?): Promise<InventoryItem[]> {
-                const items = await invoke<InventoryItem[]>('get_inventory', { category: filters?.category });
-                return items;
+                return invoke<InventoryItem[]>('get_inventory', {
+                    category: filters?.category ?? null,
+                });
             },
 
             async getById(id): Promise<InventoryItem | null> {
                 const items = await this.getAll();
-                return items.find(i => i.id === id) || null;
+                return items.find(i => i.id === id) ?? null;
             },
 
             async create(itemData): Promise<InventoryItem> {
-                const item = await invoke<InventoryItem>('create_inventory_item', {
+                return invoke<InventoryItem>('create_inventory_item', {
                     data: {
-                        item_code: itemData.itemCode,
+                        itemCode: itemData.itemCode,
                         name: itemData.name,
                         category: itemData.category,
                         quantity: itemData.quantity,
                         unit: itemData.unit,
-                        unit_price: itemData.unitPrice,
-                        supplier: itemData.supplier,
-                        reorder_level: itemData.reorderLevel
+                        unitPrice: itemData.unitPrice,
+                        supplier: itemData.supplier ?? null,
+                        reorderLevel: itemData.reorderLevel ?? null,
                     }
                 });
-                return item;
             },
 
             async update(id, data): Promise<InventoryItem> {
-                const item = await invoke<InventoryItem>('update_inventory_item', {
+                return invoke<InventoryItem>('update_inventory_item', {
                     id,
                     data: {
-                        item_code: data.itemCode,
-                        name: data.name,
-                        category: data.category,
-                        quantity: data.quantity,
-                        unit: data.unit,
-                        unit_price: data.unitPrice,
-                        supplier: data.supplier,
-                        reorder_level: data.reorderLevel
+                        itemCode: data.itemCode ?? '',
+                        name: data.name ?? '',
+                        category: data.category ?? '',
+                        quantity: data.quantity ?? 0,
+                        unit: data.unit ?? '',
+                        unitPrice: data.unitPrice ?? 0,
+                        supplier: data.supplier ?? null,
+                        reorderLevel: data.reorderLevel ?? null,
                     }
                 });
-                return item;
             },
 
             async delete(id): Promise<void> {
@@ -504,61 +470,63 @@ export function createDatabaseService(): DatabaseService {
             },
 
             async getLowStock(): Promise<InventoryItem[]> {
-                const items = await invoke<InventoryItem[]>('get_low_stock');
-                return items;
+                return invoke<InventoryItem[]>('get_low_stock');
             },
 
             async bulkImport(recordsData): Promise<number> {
                 let count = 0;
                 for (const record of recordsData) {
-                    await this.create(record);
-                    count++;
+                    try {
+                        await this.create(record);
+                        count++;
+                    } catch {
+                        // Skip duplicates
+                    }
                 }
                 return count;
             }
         },
 
+        // ── Courses ────────────────────────────────────────────────────────────
+
         courses: {
             async getAll(filters?): Promise<Course[]> {
-                const courses = await invoke<Course[]>('get_courses', {
-                    classId: filters?.classId,
-                    teacherId: filters?.teacherId
+                return invoke<Course[]>('get_courses', {
+                    classId: filters?.classId ?? null,
+                    teacherId: filters?.teacherId ?? null,
                 });
-                return courses;
             },
 
             async getById(id): Promise<Course | null> {
                 const courses = await this.getAll();
-                return courses.find(c => c.id === id) || null;
+                return courses.find(c => c.id === id) ?? null;
             },
 
             async create(courseData): Promise<Course> {
-                const course = await invoke<Course>('create_course', {
+                return invoke<Course>('create_course', {
                     data: {
                         code: courseData.code,
                         name: courseData.name,
-                        description: courseData.description,
+                        description: courseData.description ?? null,
                         credits: courseData.credits,
-                        teacher_id: courseData.teacherId,
-                        class_id: courseData.classId
+                        teacherId: courseData.teacherId ?? null,
+                        classId: courseData.classId,
                     }
                 });
-                return course;
             },
 
             async update(id, data): Promise<Course> {
-                const course = await invoke<Course>('update_course', {
+                return invoke<Course>('update_course', {
                     id,
                     data: {
-                        code: data.code,
-                        name: data.name,
-                        description: data.description,
-                        credits: data.credits,
-                        teacher_id: data.teacherId,
-                        class_id: data.classId
+                        code: data.code ?? '',
+                        name: data.name ?? '',
+                        description: data.description ?? null,
+                        credits: data.credits ?? 0,
+                        teacherId: data.teacherId ?? null,
+                        classId: data.classId ?? '',
                     }
                 });
-                return course;
             },
 
             async delete(id): Promise<void> {
@@ -566,91 +534,91 @@ export function createDatabaseService(): DatabaseService {
             }
         },
 
+        // ── Exams ──────────────────────────────────────────────────────────────
+
         exams: {
             async getAll(filters?): Promise<ExamRecord[]> {
-                const records = await invoke<ExamRecord[]>('get_exams', {
-                    studentId: filters?.studentId,
-                    courseId: filters?.courseId
+                return invoke<ExamRecord[]>('get_exams', {
+                    studentId: filters?.studentId ?? null,
+                    courseId: filters?.courseId ?? null,
                 });
-                return records;
             },
 
             async create(recordData): Promise<ExamRecord> {
-                const record = await invoke<ExamRecord>('create_exam', {
+                return invoke<ExamRecord>('create_exam', {
                     data: {
-                        student_id: recordData.studentId,
-                        course_id: recordData.courseId,
-                        exam_type: recordData.examType,
+                        studentId: recordData.studentId,
+                        courseId: recordData.courseId,
+                        examType: recordData.examType,
                         marks: recordData.marks,
-                        max_marks: recordData.maxMarks,
-                        graded_by: recordData.gradedBy,
-                        remarks: recordData.remarks
+                        maxMarks: recordData.maxMarks,
+                        gradedBy: recordData.gradedBy ?? null,
+                        remarks: recordData.remarks ?? null,
                     }
                 });
-                return record;
             },
 
             async update(id, data): Promise<ExamRecord> {
-                const record = await invoke<ExamRecord>('update_exam', {
+                return invoke<ExamRecord>('update_exam', {
                     id,
                     marks: data.marks,
-                    maxMarks: data.maxMarks,
-                    gradedBy: data.gradedBy,
-                    remarks: data.remarks,
-                    gradedAt: data.gradedAt
+                    gradedBy: data.gradedBy ?? 'system',
+                    remarks: data.remarks ?? null,
                 });
-                return record;
             }
         },
 
+        // ── Ledger ─────────────────────────────────────────────────────────────
+
         ledger: {
             async getAll(filters?): Promise<LedgerEntry[]> {
-                const entries = await invoke<LedgerEntry[]>('get_ledger', {
-                    startDate: filters?.startDate,
-                    endDate: filters?.endDate,
-                    accountCode: filters?.accountCode
+                return invoke<LedgerEntry[]>('get_ledger', {
+                    startDate: filters?.startDate ?? null,
+                    endDate: filters?.endDate ?? null,
+                    accountCode: filters?.accountCode ?? null,
                 });
-                return entries;
             },
 
             async create(entryData): Promise<LedgerEntry> {
-                const entry = await invoke<LedgerEntry>('create_ledger_entry', {
+                return invoke<LedgerEntry>('create_ledger_entry', {
                     data: {
                         date: entryData.date,
-                        account_code: entryData.accountCode,
-                        account_name: entryData.accountName,
+                        accountCode: entryData.accountCode,
+                        accountName: entryData.accountName,
                         description: entryData.description,
                         debit: entryData.debit,
                         credit: entryData.credit,
                         balance: entryData.balance,
-                        voucher_type: entryData.voucherType,
-                        voucher_number: entryData.voucherNumber,
-                        created_by: entryData.createdBy
+                        voucherType: entryData.voucherType,
+                        voucherNumber: entryData.voucherNumber,
+                        createdBy: entryData.createdBy,
                     }
                 });
-                return entry;
             }
         },
 
+        // ── Sync ───────────────────────────────────────────────────────────────
+
         sync: {
             async getStatus(): Promise<SyncStatus> {
-                const status = await invoke<SyncStatus>('get_sync_status');
-                return status;
+                return invoke<SyncStatus>('get_sync_status');
             },
 
-            async queueOperation(operation: string, tableName: string, recordId: string, data: string, userRole: string): Promise<string> {
-                return invoke<string>('queue_sync_operation', { operation, tableName, recordId, data, userRole });
+            async queueOperation(operation, tableName, recordId, data, userRole): Promise<string> {
+                return invoke<string>('queue_sync_operation', {
+                    operation, tableName, recordId, data, userRole
+                });
             },
 
             async getPendingOperations(): Promise<SyncQueueEntry[]> {
                 return invoke<SyncQueueEntry[]>('get_pending_sync_operations');
             },
 
-            async markSynced(ids: string[]): Promise<void> {
-                return invoke('mark_operations_synced', { ids });
+            async markSynced(ids): Promise<void> {
+                await invoke('mark_operations_synced', { ids });
             },
 
-            async resolveAndApplyRemote(remote: SyncQueueEntry): Promise<ConflictResolutionResult> {
+            async resolveAndApplyRemote(remote): Promise<ConflictResolutionResult> {
                 return invoke<ConflictResolutionResult>('resolve_and_apply_remote_change', {
                     remoteOperation: remote.operation,
                     remoteTable: remote.tableName,
@@ -661,11 +629,11 @@ export function createDatabaseService(): DatabaseService {
                 });
             },
 
-            async applySyncedChange(operation: string, tableName: string, recordId: string, data: string): Promise<void> {
-                return invoke('apply_synced_change', { operation, tableName, recordId, data });
+            async applySyncedChange(operation, tableName, recordId, data): Promise<void> {
+                await invoke('apply_synced_change', { operation, tableName, recordId, data });
             },
 
-            async clearOldOperations(beforeTimestamp: string): Promise<number> {
+            async clearOldOperations(beforeTimestamp): Promise<number> {
                 return invoke<number>('clear_synced_operations', { beforeTimestamp });
             }
         }

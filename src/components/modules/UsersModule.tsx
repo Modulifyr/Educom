@@ -8,13 +8,15 @@ interface UserFormData {
   fullName: string;
   role: UserRole;
   email: string;
+  password: string;
 }
 
 const initialFormData: UserFormData = {
   username: '',
   fullName: '',
   role: 'teacher',
-  email: ''
+  email: '',
+  password: '',
 };
 
 export function UsersModule() {
@@ -25,6 +27,7 @@ export function UsersModule() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [formData, setFormData] = useState<UserFormData>(initialFormData);
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
     if (!db) return;
@@ -47,6 +50,7 @@ export function UsersModule() {
   const openAddModal = () => {
     setEditingUser(null);
     setFormData(initialFormData);
+    setFormError(null);
     setShowModal(true);
   };
 
@@ -56,40 +60,55 @@ export function UsersModule() {
       username: user.username,
       fullName: user.fullName,
       role: user.role as UserRole,
-      email: user.email || ''
+      email: user.email ?? '',
+      password: '', // leave blank = no change
     });
+    setFormError(null);
     setShowModal(true);
   };
 
   const handleSave = async () => {
     if (!db) return;
-    if (!formData.username || !formData.fullName) {
-      alert('Please fill in all required fields');
+    setFormError(null);
+
+    if (!formData.username.trim() || !formData.fullName.trim()) {
+      setFormError('Username and full name are required');
+      return;
+    }
+    if (!editingUser && formData.password.length < 8) {
+      setFormError('Password must be at least 8 characters');
+      return;
+    }
+    if (editingUser && formData.password && formData.password.length < 8) {
+      setFormError('New password must be at least 8 characters');
       return;
     }
 
     setSaving(true);
     try {
       if (editingUser) {
-        await db.users.update(editingUser.id, {
-          fullName: formData.fullName,
-          role: formData.role,
-          email: formData.email || undefined
-        });
-      } else {
-        await db.users.create({
-          username: formData.username,
+        const updateData: Parameters<typeof db.users.update>[1] = {
           fullName: formData.fullName,
           role: formData.role,
           email: formData.email || undefined,
-          password: 'password123'
+        };
+        if (formData.password) {
+          updateData.password = formData.password;
+        }
+        await db.users.update(editingUser.id, updateData);
+      } else {
+        await db.users.create({
+          username: formData.username.trim(),
+          fullName: formData.fullName.trim(),
+          role: formData.role,
+          email: formData.email || undefined,
+          password: formData.password,
         });
       }
       setShowModal(false);
       loadUsers();
     } catch (error) {
-      console.error('Error saving user:', error);
-      alert('Failed to save user');
+      setFormError(error instanceof Error ? error.message : 'Failed to save user');
     }
     setSaving(false);
   };
@@ -139,28 +158,34 @@ export function UsersModule() {
                     <td className="px-4 py-3 text-sm text-slate-600">{user.fullName}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        user.role === 'admin' ? 'bg-purple-100 text-purple-700' :
-                        user.role === 'management' ? 'bg-blue-100 text-blue-700' :
-                        user.role === 'finance' ? 'bg-green-100 text-green-700' :
-                        'bg-slate-100 text-slate-700'
+                        user.role === 'admin'       ? 'bg-purple-100 text-purple-700' :
+                        user.role === 'management'  ? 'bg-blue-100 text-blue-700'    :
+                        user.role === 'finance'     ? 'bg-green-100 text-green-700'  :
+                                                      'bg-slate-100 text-slate-700'
                       }`}>
                         {user.role.charAt(0).toUpperCase() + user.role.slice(1)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{user.email || '-'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{user.createdAt.split('T')[0]}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{user.lastLogin || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{user.email ?? '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">
+                      {user.createdAt?.split('T')[0] ?? '-'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">
+                      {user.lastLogin ? user.lastLogin.split('T')[0] : 'Never'}
+                    </td>
                     {canManage && (
                       <td className="px-4 py-3 text-right">
                         <button
                           onClick={() => openEditModal(user)}
                           className="p-2 text-primary-600 hover:bg-primary-50 rounded"
+                          title="Edit user"
                         >
                           <Edit2 size={16} />
                         </button>
                         <button
                           onClick={() => handleDelete(user.id)}
                           className="p-2 text-red-600 hover:bg-red-50 rounded"
+                          title="Delete user"
                         >
                           <Trash2 size={16} />
                         </button>
@@ -190,6 +215,12 @@ export function UsersModule() {
             </div>
 
             <div className="p-6 space-y-4">
+              {formError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  {formError}
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Username <span className="text-red-500">*</span>
@@ -198,7 +229,7 @@ export function UsersModule() {
                   type="text"
                   value={formData.username}
                   onChange={e => setFormData({ ...formData, username: e.target.value })}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-slate-50"
                   placeholder="Enter username"
                   disabled={!!editingUser}
                 />
@@ -226,10 +257,10 @@ export function UsersModule() {
                   onChange={e => setFormData({ ...formData, role: e.target.value as UserRole })}
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                 >
-                  <option value="admin">Admin - Full System Access</option>
-                  <option value="management">Management - School Operations</option>
-                  <option value="finance">Finance - Accounting & Payroll Only</option>
-                  <option value="teacher">Teacher - Academic & Attendance Only</option>
+                  <option value="admin">Admin — Full system access</option>
+                  <option value="management">Management — School operations</option>
+                  <option value="finance">Finance — Accounting and payroll only</option>
+                  <option value="teacher">Teacher — Academic and attendance only</option>
                 </select>
               </div>
 
@@ -244,13 +275,20 @@ export function UsersModule() {
                 />
               </div>
 
-              {!editingUser && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                  <p className="text-sm text-amber-800">
-                    <strong>Note:</strong> The default password for new users is <code className="bg-amber-100 px-1 rounded">password123</code>
-                  </p>
-                </div>
-              )}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  {editingUser ? 'New Password (leave blank to keep current)' : 'Password'}
+                  {!editingUser && <span className="text-red-500"> *</span>}
+                </label>
+                <input
+                  type="password"
+                  value={formData.password}
+                  onChange={e => setFormData({ ...formData, password: e.target.value })}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder={editingUser ? 'Leave blank to keep current password' : 'Min 8 characters'}
+                  autoComplete="new-password"
+                />
+              </div>
             </div>
 
             <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 bg-slate-50">

@@ -1,4 +1,5 @@
 export type UserRole = 'management' | 'finance' | 'teacher' | 'admin';
+export type InstitutionType = 'school' | 'college' | 'university';
 
 export interface User {
   id: string;
@@ -19,12 +20,15 @@ export interface Student {
   firstName: string;
   lastName: string;
   dateOfBirth: string;
+  enrollmentDate: string;       // when the student joined — required for fee proration
   gender: 'male' | 'female' | 'other';
-  grade?: string;
-  semester?: string;
-  stream?: Stream;
-  classId: string;
-  section?: string;
+  // School mode: grade filled, semester blank
+  // College/university mode: semester filled, grade blank
+  grade?: string;               // "1"–"12" for schools
+  semester?: string;            // "1"–"8" for colleges
+  stream?: Stream;              // only relevant for grade 11-12
+  classId: string;              // kept for DB compatibility, mirrors grade value
+  section?: string;             // A/B/C section within a grade
   parentName: string;
   parentPhone: string;
   address: string;
@@ -73,6 +77,13 @@ export interface SalaryRecord {
   createdAt: string;
 }
 
+export interface SalaryOverride {
+  staffId: string;
+  allowances: number;
+  deductions: number;
+  note?: string;
+}
+
 export interface FeeRecord {
   id: string;
   studentId: string;
@@ -83,6 +94,7 @@ export interface FeeRecord {
   paymentDate?: string;
   status: 'pending' | 'partial' | 'paid' | 'overdue';
   academicYear: string;
+  term?: string;                // term/semester the fee applies to
   remarks?: string;
   createdAt: string;
 }
@@ -201,4 +213,89 @@ export interface InviteCreateInput {
   role: UserRole;
   username: string;
   password: string;
+}
+
+// ── Institution settings ───────────────────────────────────────────────────
+
+export interface InstitutionSettings {
+  institutionName: string;
+  institutionType: InstitutionType;  // drives which student fields are shown
+  academicYear: string;              // e.g. "2024-2025"
+  currency: string;                  // e.g. "NPR", "USD"
+  githubRepo: string;                // "owner/repo" for update checking
+  address?: string;
+  phone?: string;
+  email?: string;
+}
+
+// ── Update checking ────────────────────────────────────────────────────────
+
+export interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  published_at: string;
+  html_url: string;
+  assets: Array<{
+    name: string;
+    browser_download_url: string;
+    size: number;
+  }>;
+}
+
+export interface UpdateInfo {
+  available: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  releaseNotes: string;
+  releaseUrl: string;
+  publishedAt: string;
+}
+
+// ── Report types ───────────────────────────────────────────────────────────
+
+export interface AttendanceReportRow {
+  studentId: string;
+  studentName: string;
+  grade: string;
+  totalDays: number;
+  presentDays: number;
+  absentDays: number;
+  lateDays: number;
+  attendancePercent: number;
+}
+
+export interface FeeReportRow {
+  studentId: string;
+  studentName: string;
+  grade: string;
+  feeType: string;
+  totalAmount: number;
+  paidAmount: number;
+  pendingAmount: number;
+  status: string;
+}
+
+export interface SalaryReportRow {
+  staffId: string;
+  staffName: string;
+  department: string;
+  designation: string;
+  baseSalary: number;
+  allowances: number;
+  deductions: number;
+  netSalary: number;
+  status: string;
+}
+
+export interface ExamReportRow {
+  studentId: string;
+  studentName: string;
+  grade: string;
+  courseName: string;
+  examType: string;
+  marks: number;
+  maxMarks: number;
+  percentage: number;
+  grade_letter: string;
 }

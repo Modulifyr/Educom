@@ -45,9 +45,14 @@ const menuItems: MenuItem[] = [
 
 export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar, activeModule, setActiveModule, currentUser, logout } = useAppStore();
-  
-  const accessibleModules = currentUser ? rbacService.getAccessibleModules(currentUser.role) : [];
+
+  const accessibleModules = currentUser
+    ? rbacService.getAccessibleModules(currentUser.role)
+    : [];
   const filteredMenuItems = menuItems.filter(item => accessibleModules.includes(item.id));
+
+  // Safe initial for avatar — guard against missing/empty fullName
+  const avatarInitial = currentUser?.fullName?.charAt(0)?.toUpperCase() ?? '?';
 
   return (
     <aside
@@ -90,7 +95,10 @@ export function Sidebar() {
                   )}
                   title={sidebarCollapsed ? item.label : undefined}
                 >
-                  <Icon className={clsx('shrink-0', isActive ? 'text-white' : 'text-slate-400')} size={20} />
+                  <Icon
+                    className={clsx('shrink-0', isActive ? 'text-white' : 'text-slate-400')}
+                    size={20}
+                  />
                   {!sidebarCollapsed && (
                     <span className="font-medium">{item.label}</span>
                   )}
@@ -105,12 +113,14 @@ export function Sidebar() {
         {currentUser && (
           <div className={clsx('flex items-center', sidebarCollapsed ? 'justify-center' : 'gap-3')}>
             <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-lg font-semibold shrink-0">
-              {currentUser.fullName.charAt(0).toUpperCase()}
+              {avatarInitial}
             </div>
             {!sidebarCollapsed && (
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{currentUser.fullName}</p>
-                <p className="text-xs text-slate-400">{rbacService.getRoleDisplayName(currentUser.role)}</p>
+                <p className="text-xs text-slate-400">
+                  {rbacService.getRoleDisplayName(currentUser.role)}
+                </p>
               </div>
             )}
           </div>
