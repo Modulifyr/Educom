@@ -1,109 +1,70 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './store/appStore';
-import { Sidebar } from './components/layout/Sidebar';
-import { UtilityDock } from './components/layout/UtilityDock';
-import { Dashboard } from './components/modules/Dashboard';
-import { StudentsModule } from './components/modules/StudentsModule';
-import { StaffModule } from './components/modules/StaffModule';
-import { AttendanceModule } from './components/modules/AttendanceModule';
-import { SalaryModule } from './components/modules/SalaryModule';
-import { FeesModule } from './components/modules/FeesModule';
-import { InventoryModule } from './components/modules/InventoryModule';
-import { CoursesModule } from './components/modules/CoursesModule';
-import { ExamsModule } from './components/modules/ExamsModule';
-import { LedgerModule } from './components/modules/LedgerModule';
-import { ReportsModule } from './components/modules/ReportsModule';
-import { UsersModule } from './components/modules/UsersModule';
-import { SettingsModule } from './components/modules/SettingsModule';
-import { LoginScreen } from './components/auth/LoginScreen';
 import { SetupWizard } from './components/auth/SetupWizard';
-import './index.css';
+import { LoginScreen } from './components/auth/LoginScreen';
+import { MainLayout } from './components/layout/MainLayout';
 
-function ModuleRouter({ activeModule }: { activeModule: string }) {
-  switch (activeModule) {
-    case 'dashboard':  return <Dashboard />;
-    case 'students':   return <StudentsModule />;
-    case 'staff':      return <StaffModule />;
-    case 'attendance': return <AttendanceModule />;
-    case 'salary':     return <SalaryModule />;
-    case 'fees':       return <FeesModule />;
-    case 'inventory':  return <InventoryModule />;
-    case 'courses':    return <CoursesModule />;
-    case 'exams':      return <ExamsModule />;
-    case 'ledger':     return <LedgerModule />;
-    case 'reports':    return <ReportsModule />;
-    case 'users':      return <UsersModule />;
-    case 'settings':   return <SettingsModule />;
-    default:           return <Dashboard />;
-  }
-}
+type AppPhase = 'loading' | 'setup' | 'login' | 'app';
 
-function MainLayout() {
-  const { activeModule } = useAppStore();
-  return (
-    <div className="h-screen flex flex-col bg-slate-100">
-      <div className="flex-1 flex overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-y-auto">
-          <ModuleRouter activeModule={activeModule} />
-        </main>
-      </div>
-      <UtilityDock />
-    </div>
-  );
-}
-
-export function App() {
-  const { initialize, isLoading, isAuthenticated, isFirstRun } = useAppStore();
-  const [initError, setInitError] = useState<string | null>(null);
+export default function App() {
+  const { currentUser, db } = useAppStore();
+  const [phase, setPhase] = useState<AppPhase>('loading');
 
   useEffect(() => {
-    console.log("App initializing...");
-    initialize().catch((error) => {
-      console.error('Initialization failed:', error);
-      setInitError(error instanceof Error ? error.message : 'Failed to initialize');
-    });
-  }, [initialize]);
+    const checkFirstRun = async () => {
+      try {
+        const hasUsers = await invoke<boolean>('has_users');
+        if (!hasUsers) {
+          setPhase('setup');
+        } else if (currentUser) {
+          setPhase('app');
+        } else {
+          setPhase('login');
+        }
+      } catch {
+        // If the command fails for any reason, fall through to login
+        setPhase('login');
+      }
+    };
 
-  console.log("isLoading:", isLoading, "isAuthenticated:", isAuthenticated, "isFirstRun:", isFirstRun);
+    checkFirstRun();
+  }, []);
 
-  if (isLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-slate-100">
-        <div className="text-center">
-          <div className="w-16 h-16 border-4 border-primary-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-slate-600">Loading Educom…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (initError) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-slate-100">
-        <div className="text-center p-8 bg-white rounded-xl shadow-lg max-w-md">
-          <h2 className="text-xl font-bold text-red-600 mb-4">Initialization Error</h2>
-          <p className="text-slate-600 mb-4">{initError}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) {
-    if (isFirstRun) {
-      console.log("Showing setup wizard (first run)");
-      return <SetupWizard />;
+  // When currentUser changes (login / logout), update phase
+  useEffect(() => {
+    if (phase === 'loading') return;
+    if (currentUser) {
+      setPhase('app');
+    } else if (phase === 'app') {
+      setPhase('login');
     }
-    console.log("Showing login screen");
+  }, [currentUser]);
+
+  const handleSetupComplete = async () => {
+    // Setup wizard just created the first admin user.
+    // Move to login so they authenticate normally.
+    setPhase('login');
+  };
+
+  if (phase === 'loading') {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-400 text-sm">Starting Educom…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'setup') {
+    return <SetupWizard onComplete={handleSetupComplete} />;
+  }
+
+  if (phase === 'login') {
     return <LoginScreen />;
   }
 
-  console.log("Showing main layout");
   return <MainLayout />;
 }

@@ -1,71 +1,53 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Educom",
-  "version": "1.0.0",
-  "identifier": "com.educom.institutional",
+  "version": "0.1.0",
+  "identifier": "com.modulifyr.educom",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "title": "Educom - Institutional Management",
-        "width": 1400,
-        "height": 900,
+        "width": 1280,
+        "height": 800,
         "minWidth": 1024,
-        "minHeight": 700,
-        "center": true,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
-        "decorations": true
+        "decorations": true,
+        "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
-    }
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "",
-      "endpoints": [
-        "https://releases.educom.local/{{target}}/{{arch}}/{{current_version}}"
-      ]
+      "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "dmg", "app", "deb", "rpm", "appimage"],
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "category": "Education",
-    "shortDescription": "Institutional Management System",
-    "longDescription": "Educom is a comprehensive desktop application for educational institutional management, covering student records, staff management, attendance, payroll, fees, inventory, courses, examinations, and financial ledger.",
-    "windows": {
-      "nsis": {
-        "displayLanguageSelector": true,
-        "installerIcon": "icons/icon.ico",
-        "installMode": "currentUser"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "~/.tauri/educom.key.pub",
+      "endpoints": [
+        "https://github.com/Modulifyr/Educom/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "windows": {
+        "installMode": "passive"
       }
-    },
-    "linux": {
-      "appimage": {
-        "bundleMediaFramework": true
-      },
-      "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libappindicator3-1"]
-      }
-    },
-    "macOS": {
-      "minimumSystemVersion": "10.15"
     }
   }
 }
